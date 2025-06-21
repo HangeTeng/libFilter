@@ -1,0 +1,166 @@
+import hashlib
+import random
+import math
+from typing import Final, Union, List, Iterator
+
+
+# --- 类型与常量定义 ---
+
+ALLOWED_HASH_TYPES: Final = frozenset([
+    "sha256",
+    "blake2b",
+    "sha1",
+    "blake2s",
+])
+
+InputType = Union[int, str, bytes]
+
+# --- 工具函数 ---
+
+# 优化点: 根据你的建议，将函数重命名为更具描述性的名称
+def _inputtype_to_bytes(data: InputType) -> bytes:
+    match data:
+        case bytes():
+            return data
+        case str():
+            return data.encode("utf-8")
+        case int() if data >= 0:
+            byte_length = (data.bit_length() + 7) // 8 or 1
+            return data.to_bytes(byte_length, "little")
+        case int():
+            raise ValueError("整数不能为负")
+        case _:
+            raise TypeError(f"不支持的类型: {type(data).__name__}")
+
+# --- 主要类定义 ---
+
+class prng:
+    """仅支持 random() 的精简 PRNG。"""
+
+    def __init__(self, seed: int):
+        self._rng = random.Random(seed)
+
+    def random(self) -> float:
+        return self._rng.random()
+
+
+
+class Hasher:
+    """
+    一个可配置的哈希计算器，用于将输入数据映射到一个64位整数。
+
+    通过预先计算种子部分的哈希状态来优化对不同数据进行哈希时的性能。
+    """
+    def __init__(self,
+                 seed: InputType,
+                 algo: str = "sha256"):
+        algo = algo.lower()
+        if algo not in ALLOWED_HASH_TYPES:
+            raise ValueError(f"不支持的哈希算法: {algo}，只能从 {sorted(ALLOWED_HASH_TYPES)} 中选择")
+
+        self.algo = algo
+        self.seed = seed
+        self._base_hasher = hashlib.new(self.algo)
+        self._base_hasher.update(_inputtype_to_bytes(self.seed))
+
+    def _digest(self, data: InputType) -> bytes:
+        h = self._base_hasher.copy()
+        h.update(_inputtype_to_bytes(data))
+        return h.digest()
+
+    def digest_int(self, data: InputType, nbytes: int = 8) -> int:
+        return int.from_bytes(self._digest(data)[:nbytes], "big")    
+
+    def prng(self, data: InputType) -> prng:
+        return prng(self.digest_int(data))
+
+class HashMapping:
+    """BF / CBF / IBLT 等数据结构共用的 k 重哈希映射器。"""
+
+    k = 0
+
+    def __init__(self, hashers: List[Hasher], table_size: int):
+        if not table_size > 0:
+            raise ValueError("table_size 必须为正数")
+        self.hashers = hashers
+        self.table_size = table_size
+        k = len hashers
+
+    @classmethod
+    def from_seeds(cls,
+                   seeds: List[int],
+                   table_size: int,
+                   algo: str = "sha256") -> "HashMapping":
+        hashers = [Hasher(seed=s, algo=algo) for s in seeds]
+        return cls(hashers, table_size)
+
+    def indices(self, key: InputType) -> List[int]:
+        """
+        给定 key，返回它在 table_size 个桶中映射的 k 个下标。
+
+        Args:
+            key (InputType): 可以是 int, str 或 bytes。
+
+        Returns:
+            List[int]: 长度等于哈希器数量的桶下标列表。
+        """
+        return [hasher.prng(key) % self.table_size for hasher in self.hashers]
+    
+import random
+
+class IndexGenerator:
+    def __init__(self, key: InputType, seed: InputType):
+        self._prng = Hasher(seed).prng(key)
+        self.curr = 0
+
+    def jump(self) -> None:
+        """使用随机浮点数跳跃。"""
+        r = self._prng.random()
+        self.curr += math.ceil((self.curr + 1.5) * (1 / math.sqrt(r + 1e-8) - 1.0))
+
+SymbolQueu
+
+def _xor_bytes(b1: bytes, b2: bytes) -> bytes:
+    length = max(len(b1), len(b2))
+    # 使用 ljust 填充，比手动循环更高效
+    b1 = b1.ljust(length, b'\0')
+    b2 = b2.ljust(length, b'\0')
+    return bytes(x ^ y for x, y in zip(b1, b2))
+
+
+class FilterSymbol:
+        """所有过滤器单元格的统一抽象基类。"""
+    @abc.abstractmethod
+    def add(self, other: 'Symbol') -> None:
+        """将另一个符号的信息合并到当前符号中（原地修改）。"""
+        pass
+
+    @abc.abstractmethod
+    def is_empty(self) -> bool:
+        """判断该符号是否为空/处于初始状态。"""
+        pass
+
+class PeelableSymbol(Symbol):
+    """为 IBLT/RIBLT 设计的、可解码的符号。"""
+    sub()
+
+    is_pure  
+
+
+
+class FilterBase:
+    Init:
+    list[FilterSymbol]
+
+    @abc.abstractmethod
+    def _get_indices(self, item: InputType) -> Iterator[int]:
+        """为给定项生成索引序列。"""
+        pass
+
+    def __len__(self) -> int:
+        return len(self.cells)
+
+
+
+
+class BF(StandardFilter[BFSymbol]):
