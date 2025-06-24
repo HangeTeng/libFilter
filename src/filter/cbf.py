@@ -1,118 +1,174 @@
-# src/filter/cbf.py
+from __future__ import annotations
+import unittest
+import argparse
+import sys
+from .base import FilterItem, StandardFilter, FilterSymbol, FilterBase
+from .utils import InputType, HashMapping
 
-from typing import List
-from .base import FilterSymbol, StandardFilter
-from .utils import InputType, Hasher, HashMapping
+# --- CBF-specific Types ---
+class CBFItem(FilterItem):
+    """An item containing a simple key for a Counting Bloom Filter."""
+    __slots__ = ('key',)
+
+    def __init__(self, key: InputType):
+        self.key = key
+
+    def get_key(self) -> InputType:
+        return self.key
+    
+    def __repr__(self) -> str:
+        return f"CBFItem(key={self.key!r})"
 
 class CBFSymbol(FilterSymbol):
-    """计数布隆过滤器的单元格。"""
+    """A Counting Bloom Filter cell, representing an integer counter."""
+    __slots__ = ('count',)
+
     def __init__(self, count: int = 0):
-        self.count = count
-    
-    def add(self, other: 'CBFSymbol') -> None:
+        self.count: int = count
+
+    def __iadd__(self, other: CBFSymbol) -> CBFSymbol:
         self.count += other.count
+        return self
+
+    def __isub__(self, other: CBFSymbol) -> CBFSymbol:
+        self.count -= other.count
+        return self
 
     def is_empty(self) -> bool:
         return self.count == 0
-    
+
     def __str__(self) -> str:
-        return f"Count = {self.count}"
-
-class CBF(StandardFilter[CBFSymbol]):
-    """
-    计数布隆过滤器 (Counting Bloom Filter)。
-    它的构造函数与其父类一致，提供便利的工厂方法。
-    """
-    def __init__(self, hash_mapping: HashMapping):
-        super().__init__(CBFSymbol, hash_mapping)
+        return f"count={self.count}"
 
     @classmethod
-    def from_hashers(cls, m: int, hashers: List[Hasher]) -> 'CBF':
-        """通过 Hasher 列表创建 CBF。"""
-        if not m > 0: raise ValueError("过滤器大小 (m) 必须为正数")
-        if not hashers: raise ValueError("hashers 列表不能为空")
-        hash_mapping = HashMapping(hashers, m)
-        return cls(hash_mapping)
-
+    def _get_key(cls, item: CBFItem) -> InputType:
+        return item.get_key()
+    
     @classmethod
-    def from_seeds(cls, m: int, hash_seeds: List[int], hash_algo: str = "sha256") -> 'CBF':
-        """通过种子列表创建 CBF。"""
-        if not m > 0: raise ValueError("过滤器大小 (m) 必须为正数")
-        if not hash_seeds: raise ValueError("hash_seeds 列表不能为空")
-        hash_mapping = HashMapping.from_seeds(hash_seeds, m, hash_algo)
-        return cls(hash_mapping)
-    
-    def add(self, item: InputType) -> None:
-        """向过滤器中添加一个元素，对应计数器加一。"""
-        source_symbol = CBFSymbol(1)
-        for index in self._get_indices(item):
-            self.cells[index].add(source_symbol)
-    
-    def sub(self, item: InputType) -> None:
-        """
-        从过滤器中移除一个元素，对应计数器减一。
-        为防止下溢，只在元素可能存在时操作。
-        """
-        if self.query(item):
-            source_symbol = CBFSymbol(-1)
-            for index in self._get_indices(item):
-                # 额外的保护，确保计数器不降到负数
-                if self.cells[index].count > 0:
-                    self.cells[index].add(source_symbol)
-    
-    def query(self, item: InputType) -> bool:
-        """查询一个元素是否存在（所有对应计数器 > 0）。"""
-        return all(self.cells[index].count > 0 for index in self._get_indices(item))
+    def from_item(cls, item: CBFItem) -> CBFSymbol:
+        return cls(count=1)
+
+# --- CBF Implementation ---
+class CBF(StandardFilter[CBFSymbol, CBFItem]):
+    """A classic Counting Bloom Filter (CBF)."""
+    symbol_type = CBFSymbol
+
+    def __contains__(self, item: CBFItem) -> bool:
+        """Checks for the presence of an item (allows for false positives)."""
+        if not self.m:
+            return False
+        key = self.__class__.symbol_type._get_key(item)
+        return all(self.cells[i].count > 0 for i in self._get_indices(key))
+
+# --- In-module Tests ---
+cli_args = None
+
+class VerboseTestCase(unittest.TestCase):
+    """A test case that can print filter states based on a CLI flag."""
+    def _print_filter_state(self, filter_instance: FilterBase, stage: str):
+        if not (cli_args and cli_args.verbose_filters):
+            return
         
-    def __contains__(self, item: InputType) -> bool:
-        return self.query(item)
+        print("\n" + "=" * 70)
+        print(f"  [VERBOSE] Filter State Snapshot\n  Test: {self.id()}\n  Stage: {stage}")
+        print("-" * 70)
+        print(filter_instance.to_string(verbose=False))
+        print("=" * 70 + "\n")
 
-# --- 模块自测试代码 ---
-if __name__ == '__main__':
-    print("--- Running Self-Test for Counting Bloom Filter (CBF) ---")
-    m_test, k_test = 15, 3
-    cbf = CBF.from_seeds(m=m_test, hash_seeds=list(range(k_test)))
-    print(f"创建了一个 m={cbf.m}, k={cbf.k} 的计数布隆过滤器。")
+class TestCountingBloomFilter(VerboseTestCase):
+    def setUp(self):
+        # Use meaningful string seeds for different hash functions
+        seeds = ['HH', 'MM', 'BH'] 
+        self.m, self.k = 100, len(seeds)
+        self.hash_map = HashMapping.from_seeds(seeds, self.m)
+        self.cbf = CBF(self.hash_map)
+        self.items = [CBFItem("apple"), CBFItem("banana"), CBFItem("apple")]
+    
+    def test_push_and_membership(self):
+        """Verifies item addition and membership checking."""
+        apple, banana, _ = self.items
+        
+        self.cbf.push(apple)
+        self._print_filter_state(self.cbf, "After pushing 'apple' once")
+        self.assertIn(apple, self.cbf)
+        
+        self.cbf.push(banana)
+        self._print_filter_state(self.cbf, "After pushing 'banana'")
+        self.assertIn(banana, self.cbf)
+        
+        self.cbf.push(apple)
+        self._print_filter_state(self.cbf, "After pushing 'apple' a second time")
+        self.assertIn(apple, self.cbf)
 
-    print("\n添加 'apple' 两次, 'banana' 一次。")
-    cbf.add("apple")
-    cbf.add("apple")
-    cbf.add("banana")
-    
-    print("\n过滤器内部状态:")
-    print(cbf)
-    
-    print("\n--- 查询验证 ---")
-    assert "apple" in cbf, "测试失败: 'apple' 应该在过滤器中"
-    print("'apple' in cbf (count=2) -> True (正确)")
-    
-    assert "banana" in cbf, "测试失败: 'banana' 应该在过滤器中"
-    print("'banana' in cbf (count=1) -> True (正确)")
+    def test_removal(self):
+        """Verifies that item removal correctly decrements counters."""
+        apple, banana, _ = self.items
 
-    assert not ("cherry" in cbf), "测试失败(可能因哈希碰撞): 'cherry' 不应在过滤器中"
-    print("'cherry' in cbf -> False (正确)")
+        self.cbf.push(apple)
+        self.cbf.push(apple)
+        self.cbf.push(banana)
+        self._print_filter_state(self.cbf, "Initial state: 2 apples, 1 banana")
+        self.assertTrue(apple in self.cbf and banana in self.cbf)
+
+        self.cbf.remove(apple)
+        self._print_filter_state(self.cbf, "After removing 'apple' once")
+        self.assertIn(apple, self.cbf)
+        
+        self.cbf.remove(apple)
+        self._print_filter_state(self.cbf, "After removing 'apple' twice")
+        self.assertNotIn(apple, self.cbf)
+        self.assertIn(banana, self.cbf)
+        
+        self.cbf.remove(banana)
+        self._print_filter_state(self.cbf, "After removing 'banana'")
+        self.assertNotIn(banana, self.cbf)
+        self.assertTrue(all(c.is_empty() for c in self.cbf.cells))
+
+    def test_internal_counts(self):
+        """Directly checks the counter values in cells."""
+        apple, banana, _ = self.items
+        self.cbf.push(apple)
+        self.cbf.push(apple)
+        self.cbf.push(banana)
+        self._print_filter_state(self.cbf, "State for count verification")
+
+        apple_indices = list(self.cbf._get_indices(apple.key))
+        banana_indices = list(self.cbf._get_indices(banana.key))
+        
+        expected_counts = {}
+        for i in apple_indices:
+            expected_counts[i] = expected_counts.get(i, 0) + 2
+        for i in banana_indices:
+            expected_counts[i] = expected_counts.get(i, 0) + 1
+
+        for i, cell in enumerate(self.cbf.cells):
+            self.assertEqual(cell.count, expected_counts.get(i, 0))
+
+    def test_string_representation(self):
+        """Checks the output format of __str__ and to_string."""
+        self.cbf.push(self.items[0])
+        str_output = str(self.cbf)
+        self.assertIn("Summary:", str_output)
+        self.assertIn("- Index", str_output)
+        self.assertIn("count=1", str_output)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run tests for the Counting Bloom Filter.")
+    parser.add_argument(
+        '-vf', '--verbose-filters', action='store_true',
+        help="Print filter state after each modification during tests."
+    )
+
+    args, unknown = parser.parse_known_args()
+    cli_args = args
+    main_args = [sys.argv[0]] + unknown
     
-    print("\n--- 删除验证 ---")
-    print("\n移除 'apple' 一次。")
-    cbf.sub("apple")
-    assert "apple" in cbf, "测试失败: 'apple' 移除一次后仍应存在"
-    print("查询 'apple' -> True (正确)")
+    print("\n" + "#" * 70)
+    print("###" + " " * 19 + "RUNNING COUNTING BLOOM FILTER TESTS" + " " * 18 + "###")
+    print("#" * 70)
+    if cli_args.verbose_filters:
+        print("### Verbose filter state printing: ENABLED")
+        print("#" * 70)
     
-    print("\n再次移除 'apple'。")
-    cbf.sub("apple")
-    assert not ("apple" in cbf), "测试失败: 'apple' 移除两次后不应存在"
-    print("查询 'apple' -> False (正确)")
-    
-    print("\n尝试移除不存在的 'cherry'。")
-    cbf.sub("cherry") # 不应该产生错误或改变状态
-    print("操作完成，状态应无变化。")
-    
-    print("\n移除 'banana'。")
-    cbf.sub("banana")
-    assert not ("banana" in cbf), "测试失败: 'banana' 移除后不应存在"
-    print("查询 'banana' -> False (正确)")
-    
-    print("\n最终过滤器内部状态:")
-    print(cbf)
-    
-    print("\n--- CBF Self-Test Completed Successfully! ---")
+    unittest.main(argv=main_args, verbosity=2, exit=False)
