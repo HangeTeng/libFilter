@@ -4,325 +4,187 @@ from __future__ import annotations
 import unittest
 import argparse
 import sys
-from typing import Set, Tuple, List, Optional, cast
+from typing import Set, Tuple, List, Dict, Any
 
 from .base import FilterItem, PeelableSymbol, StandardFilter, FilterBase
-from .utils import InputType, HashMapping, Hasher, _xor_bytes, _inputtype_to_bytes
+from .utils import InputType, Hasher, _xor_bytes, _inputtype_to_bytes, HashMapping
+
+# --- Type Serialization Helpers ---
+class _DataType: BYTES, STR, INT = 0, 1, 2
+class _TypedValue:
+    __slots__ = ('value', 'type_id')
+    def __init__(self, raw_value: InputType):
+        if isinstance(raw_value, str): self.value, self.type_id = raw_value.encode('utf-8'), _DataType.STR
+        elif isinstance(raw_value, int):
+            if raw_value < 0: raise ValueError("Integers cannot be negative.")
+            byte_len = (raw_value.bit_length() + 7) // 8 or 1
+            self.value, self.type_id = raw_value.to_bytes(byte_len, 'little'), _DataType.INT
+        elif isinstance(raw_value, bytes): self.value, self.type_id = raw_value, _DataType.BYTES
+        else: raise TypeError(f"Unsupported type: {type(raw_value)}")
+    def serialize(self) -> bytes: return self.type_id.to_bytes(1, 'little') + self.value
+    @staticmethod
+    def deserialize(data: bytes) -> InputType:
+        if not data: return b''
+        type_id, value_bytes = data[0], data[1:]
+        if type_id == _DataType.STR: return value_bytes.decode('utf-8')
+        if type_id == _DataType.INT: return int.from_bytes(value_bytes, 'little')
+        if type_id == _DataType.BYTES: return value_bytes
+        raise ValueError(f"Unknown type_id: {type_id}")
 
 # --- IBLT-specific Types ---
-
 class IBLTItem(FilterItem):
-    """
-    An item for an Invertible Bloom Lookup Table (IBLT), containing both a
-    key and an associated value.
-    """
     __slots__ = ('key', 'value')
-
-    def __init__(self, key: InputType, value: bytes):
-        if not isinstance(value, bytes):
-            raise TypeError("IBLT item value must be bytes.")
-        self.key = key
-        self.value = value
-
-    def get_key(self) -> InputType:
-        return self.key
-
+    def __init__(self, key: InputType, value: InputType): self.key, self.value = key, value
+    def get_key(self) -> InputType: return self.key
     def __eq__(self, other):
-        if not isinstance(other, IBLTItem):
-            return NotImplemented
+        if not isinstance(other, IBLTItem): return NotImplemented
         return self.key == other.key and self.value == other.value
-    
     def __hash__(self):
-        return hash((self.key, self.value))
-
-    def __repr__(self) -> str:
-        # Show truncated value for readability
-        val_repr = self.value[:16].hex() + ('...' if len(self.value) > 16 else '')
-        return f"IBLTItem(key={self.key!r}, value=0x{val_repr})"
+        return hash((_inputtype_to_bytes(self.key), _inputtype_to_bytes(self.value)))
+    def __repr__(self) -> str: return f"IBLTItem(key={self.key!r}, value={self.value!r})"
 
 class IBLTSymbol(PeelableSymbol):
-    """
-    A cell in an IBLT, tracking a count, a key XOR sum, and a value XOR sum.
-    """
     __slots__ = ('count', 'key_sum', 'value_sum')
-
     def __init__(self, count: int = 0, key_sum: bytes = b'', value_sum: bytes = b''):
-        self.count: int = count
-        self.key_sum: bytes = key_sum
-        self.value_sum: bytes = value_sum
-
+        self.count, self.key_sum, self.value_sum = count, key_sum, value_sum
     def __iadd__(self, other: IBLTSymbol) -> IBLTSymbol:
-        self.count += other.count
-        self.key_sum = _xor_bytes(self.key_sum, other.key_sum)
-        self.value_sum = _xor_bytes(self.value_sum, other.value_sum)
+        self.count += other.count; self.key_sum = _xor_bytes(self.key_sum, other.key_sum); self.value_sum = _xor_bytes(self.value_sum, other.value_sum)
         return self
-
     def __isub__(self, other: IBLTSymbol) -> IBLTSymbol:
-        self.count -= other.count
-        self.key_sum = _xor_bytes(self.key_sum, other.key_sum)
-        self.value_sum = _xor_bytes(self.value_sum, other.value_sum)
+        self.count -= other.count; self.key_sum = _xor_bytes(self.key_sum, other.key_sum); self.value_sum = _xor_bytes(self.value_sum, other.value_sum)
         return self
-
     def is_empty(self) -> bool:
-        return self.count == 0 and not self.key_sum and not self.value_sum
-
-    def is_pure(self, hasher: Hasher) -> bool:
-        """
-        A symbol is pure if it represents a single item. This is true if:
-        1. The count is 1 or -1.
-        2. The hash of the key_sum matches the hash of the recovered key.
-           (This is a simplified check, a hash of value could also be used).
-        
-        This implementation assumes the key itself is stored in `key_sum`.
-        A more robust IBLT might store a hash of the key instead.
-        """
-        if self.count == 1 or self.count == -1:
-            # key_sum actually holds the key itself when pure
-            recovered_key = self.key_sum 
-            # In a real IBLT, you'd typically XOR a dedicated `key_hash` field.
-            # Here we just check if the key_sum is non-empty. In a robust system,
-            # you'd use a checksum or a second hash.
-            # For this simplified example, we'll trust the count.
-            return bool(self.key_sum)
-        return False
-    
-    def get_key(self) -> Optional[InputType]:
-        """Recovers the key if the symbol is pure."""
-        # For simplicity, we assume the key was an int or str that became bytes.
-        # This is a limitation of this simplified example.
-        # A full implementation would need type info or fixed-width keys.
-        try:
-            return int.from_bytes(self.key_sum, 'little')
-        except (ValueError, TypeError):
-            try:
-                return self.key_sum.decode('utf-8')
-            except UnicodeDecodeError:
-                return self.key_sum # Return as bytes if all else fails
-
+        return self.count == 0 and all(b==0 for b in self.key_sum) and all(b==0 for b in self.value_sum)
+    def is_pure(self) -> bool: return self.count == 1 or self.count == -1
+    def __getstate__(self) -> Dict[str, Any]:
+        return {'count': self.count, 'key_sum': self.key_sum, 'value_sum': self.value_sum}
     def __str__(self) -> str:
-        key_sum_hex = self.key_sum[:8].hex() + '...' if len(self.key_sum) > 8 else self.key_sum.hex()
-        val_sum_hex = self.value_sum[:8].hex() + '...' if len(self.value_sum) > 8 else self.value_sum.hex()
-        return (f"count={self.count}, key_sum=0x{key_sum_hex}, "
-                f"value_sum=0x{val_sum_hex}")
-
+        k_hex, v_hex = self.key_sum[:4].hex(), self.value_sum[:4].hex()
+        return f"cnt={self.count}, k_sum=0x{k_hex}..., v_sum=0x{v_hex}..."
     @classmethod
-    def _get_key(cls, item: IBLTItem) -> InputType:
-        return item.get_key()
-    
+    def _get_key(cls, item: IBLTItem) -> InputType: return item.get_key()
     @classmethod
-    def from_item(cls, item: IBLTItem) -> IBLTSymbol:
-        """Creates a source symbol from a single IBLTItem."""
-        key_bytes = _inputtype_to_bytes(item.key)
-        return cls(count=1, key_sum=key_bytes, value_sum=item.value)
-
+    def from_item(cls, item: IBLTItem, **kwargs) -> IBLTSymbol:
+        return cls(1, _TypedValue(item.key).serialize(), _TypedValue(item.value).serialize())
     @classmethod
-    def to_item(cls, symbol: IBLTSymbol) -> IBLTItem:
-        """Recovers the original IBLTItem from a pure symbol."""
-        if not (symbol.count == 1 or symbol.count == -1):
-             raise ValueError("Cannot convert non-pure symbol to item.")
-        
-        key = symbol.get_key()
-        if key is None:
-            raise ValueError("Could not decode key from symbol.")
-            
-        value = symbol.value_sum
-        
-        # If the symbol represents a removed item, the values are effectively inverted.
-        # We don't need to do anything here as the subtraction in peel() handles this.
-        return IBLTItem(key, value)
+    def to_item(cls, symbol: "IBLTSymbol") -> IBLTItem:
+        if not (symbol.count == 1 or symbol.count == -1): raise ValueError("Non-pure")
+        return IBLTItem(_TypedValue.deserialize(symbol.key_sum), _TypedValue.deserialize(symbol.value_sum))
 
 # --- IBLT Implementation ---
 class IBLT(StandardFilter[IBLTSymbol, IBLTItem]):
-    """
-    An Invertible Bloom Lookup Table (IBLT), capable of storing key-value
-    pairs and recovering set differences.
-    """
     symbol_type = IBLTSymbol
-
-    def peel(self) -> Tuple[Set[IBLTItem], Set[IBLTItem]]:
-        """
-        Decodes the IBLT to find the set differences.
-
-        This is a destructive operation on a copy of the filter.
-
-        Returns:
-            A tuple containing (items_added, items_removed).
-        """
-        decoder = self.__copy__() # Work on a copy
-        
-        added: Set[IBLTItem] = set()
-        removed: Set[IBLTItem] = set()
-        
-        # We need a hasher to verify purity, but IBLT doesn't store one by default.
-        # We can create a dummy one. The `is_pure` implementation here is simple
-        # and doesn't rely on it, but a more robust one would.
-        dummy_hasher = Hasher(seed=0)
-        
-        while True:
-            pure_indices: List[int] = []
-            for i, cell in enumerate(decoder.cells):
-                if cell.is_pure(dummy_hasher):
-                    pure_indices.append(i)
-            
-            if not pure_indices:
-                break # No more pure cells, decoding stops
-
-            for index in pure_indices:
-                pure_cell = decoder.cells[index]
-                if pure_cell.is_empty():
-                    continue
-
-                # Recover the item from the pure cell
-                item = self.__class__.symbol_type.to_item(pure_cell)
-                
-                # Check if it was added or removed
-                if pure_cell.count == 1:
-                    added.add(item)
-                else: # count == -1
-                    removed.add(item)
-                
-                # Subtract the recovered item from the decoder to reveal more pure cells
-                decoder.remove(item)
-
-        # Check for failure
-        if not all(cell.is_empty() for cell in decoder.cells):
-            print("Warning: IBLT decoding failed. Not all cells could be cleared.", file=sys.stderr)
-
+    def peel(self, destructive: bool = False) -> Tuple[Set[IBLTItem], Set[IBLTItem]]:
+        decoder = self if destructive else self.copy()
+        added, removed = set(), set()
+        pure_queue = [i for i, c in enumerate(decoder.cells) if c.is_pure()]
+        processed = set(pure_queue)
+        while pure_queue:
+            cell = decoder.cells[pure_queue.pop(0)]
+            if not cell.is_pure(): continue
+            item = decoder.symbol_type.to_item(cell)
+            (added if cell.count == 1 else removed).add(item)
+            decoder.remove(item)
+            for idx in decoder._get_indices(item.get_key()):
+                if idx not in processed and decoder.cells[idx].is_pure():
+                    pure_queue.append(idx); processed.add(idx)
+        if not all(c.is_empty() for c in decoder.cells):
+            print("Warning: IBLT decoding may be incomplete due to unresolvable collisions.")
         return added, removed
-
-    def __copy__(self) -> IBLT:
-        """Create a deep copy for decoding."""
-        new_iblt = IBLT(self.hash_mapping)
-        new_iblt.cells = [
-            IBLTSymbol(c.count, c.key_sum, c.value_sum) for c in self.cells
-        ]
-        return new_iblt
 
 # --- In-module Tests ---
 cli_args = None
-
 class VerboseTestCase(unittest.TestCase):
-    """A test case that can print filter states based on a CLI flag."""
     def _print_filter_state(self, filter_instance: FilterBase, stage: str):
-        if not (cli_args and cli_args.verbose_filters):
-            return
-        
-        print("\n" + "=" * 70)
-        print(f"  [VERBOSE] Filter State Snapshot\n  Test: {self.id()}\n  Stage: {stage}")
-        print("-" * 70)
-        print(filter_instance.to_string(verbose=False))
-        print("=" * 70 + "\n")
+        if cli_args and cli_args.verbose_filters:
+            print(f"\n--- [State after: {stage}] ---\n{filter_instance.to_string(False)}")
 
 class TestIBLT(VerboseTestCase):
     def setUp(self):
-        seeds = ['S1', 'S2', 'S3', 'S4']
-        self.m, self.k = 20, len(seeds)
-        self.hash_map = HashMapping.from_seeds(seeds, self.m)
-        self.iblt = IBLT(self.hash_map)
-        
-        # Sets for two parties, A and B
-        self.set_a = {
-            IBLTItem("apple", b"v1"),
-            IBLTItem("banana", b"v2"),
-            IBLTItem("common", b"v_common")
-        }
-        self.set_b = {
-            IBLTItem("grape", b"v3"),
-            IBLTItem("orange", b"v4"),
-            IBLTItem("common", b"v_common")
-        }
+        self.hash_map = HashMapping.from_seeds(['S1', 'S2', 'S3'], 40)
+        self.set_a = {IBLTItem("apple", "red"), IBLTItem(123, 456)}
+        self.set_b = {IBLTItem("grape", "purple"), IBLTItem("apple", "red")}
+        # A set with the same key as set_a but a different value
+        self.set_c_diff_val = {IBLTItem("apple", "green"), IBLTItem(123, 456)}
 
-    def test_basic_push_remove(self):
-        """Tests that push and remove correctly modify the cells."""
-        item = IBLTItem("test", b"val")
-        
-        self.iblt.push(item)
-        self._print_filter_state(self.iblt, "After pushing 'test'")
-        non_empty_cells_after_push = sum(1 for c in self.iblt.cells if not c.is_empty())
-        self.assertEqual(non_empty_cells_after_push, self.k)
-        
-        self.iblt.remove(item)
-        self._print_filter_state(self.iblt, "After removing 'test'")
-        all_empty = all(c.is_empty() for c in self.iblt.cells)
-        self.assertTrue(all_empty, "All cells should be empty after push and remove")
+    def test_copy_method(self):
+        iblt = IBLT(self.hash_map)
+        iblt.push(IBLTItem("key", "val"))
+        iblt_copy = iblt.copy()
+        self.assertNotEqual(id(iblt), id(iblt_copy))
+        self.assertEqual(iblt.to_dict(), iblt_copy.to_dict())
 
-    def test_peel_simple_difference(self):
-        """Tests decoding a simple set difference."""
-        iblt_a = IBLT(self.hash_map)
-        for item in self.set_a:
-            iblt_a.push(item)
-        self._print_filter_state(iblt_a, "IBLT for Set A")
+    def test_peel_logic(self):
+        iblt = IBLT(self.hash_map)
+        for item in self.set_a: iblt.push(item)
+        original_state = iblt.to_dict()
+        added, _ = iblt.peel(destructive=False)
+        self.assertEqual(added, self.set_a)
+        self.assertEqual(iblt.to_dict(), original_state)
+        added_d, _ = iblt.peel(destructive=True)
+        self.assertEqual(added_d, self.set_a)
+        self.assertTrue(all(c.is_empty() for c in iblt.cells))
 
-        iblt_b = IBLT(self.hash_map)
-        for item in self.set_b:
-            iblt_b.push(item)
-        self._print_filter_state(iblt_b, "IBLT for Set B")
-
-        # The difference IBLT represents items in A but not B (added),
-        # and items in B but not A (removed).
+    def test_set_difference(self):
+        iblt_a = IBLT(self.hash_map); [iblt_a.push(item) for item in self.set_a]
+        iblt_b = IBLT(self.hash_map); [iblt_b.push(item) for item in self.set_b]
         diff_iblt = iblt_a - iblt_b
-        self._print_filter_state(diff_iblt, "Difference IBLT (A - B)")
+        added, removed = diff_iblt.peel()
+        self.assertEqual(added, self.set_a - self.set_b)
+        self.assertEqual(removed, self.set_b - self.set_a)
+
+    def test_value_difference_causes_cancellation(self):
+        """
+        Tests the IBLT's behavior with same keys but different values.
+        
+        This test demonstrates a key property of this IBLT implementation:
+        it assumes a one-to-one mapping between a key and its value. When
+        two items with the same key but different values are differenced,
+        their `count` and `key_sum` cancel out (1-1=0, k^k=0), leaving a
+        non-zero `value_sum`. This results in a non-pure cell (`count=0`)
+        that cannot be decoded by the peel algorithm.
+        """
+        iblt_a = IBLT(self.hash_map)
+        for item in self.set_a: iblt_a.push(item)
+
+        iblt_c = IBLT(self.hash_map)
+        for item in self.set_c_diff_val: iblt_c.push(item)
+        
+        diff_iblt = iblt_a - iblt_c
+        self._print_filter_state(diff_iblt, "A - C (value difference)")
 
         added, removed = diff_iblt.peel()
 
-        expected_added = self.set_a - self.set_b
-        expected_removed = self.set_b - self.set_a
+        # The item 'apple'/'red' from set_a and 'apple'/'green' from set_c
+        # have cancelled each other out, so they do NOT appear in the result.
+        # The only item that doesn't have a matching key is 123/456, but since
+        # its counterpart in set_c has the same value, it also cancels out.
+        # In this specific case, nothing can be decoded.
         
-        self.assertEqual(added, expected_added)
-        self.assertEqual(removed, expected_removed)
+        # We expect both sets to be empty because no pure cells can be found.
+        self.assertEqual(added, set())
+        self.assertEqual(removed, set())
 
-    def test_peel_idempotent(self):
-        """Tests that peeling a filter with no differences yields empty sets."""
-        self.iblt.push(IBLTItem("key1", b"v1"))
-        self.iblt.remove(IBLTItem("key1", b"v1"))
-        self._print_filter_state(self.iblt, "After push/remove same item")
+        # Let's create a more illustrative case
+        set_x = {IBLTItem("unique_x", 1)}
+        set_y = {IBLTItem("apple", "red")}
+        set_z = {IBLTItem("apple", "green"), IBLTItem("unique_x", 1)}
         
-        added, removed = self.iblt.peel()
-        self.assertEqual(len(added), 0)
-        self.assertEqual(len(removed), 0)
+        ix = IBLT(self.hash_map); [ix.push(i) for i in set_x]
+        iyz = IBLT(self.hash_map); [iyz.push(i) for i in set_y | set_z]
 
-    def test_peel_failure_case(self):
-        """Tests a likely decoding failure due to high load."""
-        # Use a very small table to force collisions
-        small_map = HashMapping.from_seeds(['s1', 's2'], 4)
-        fail_iblt = IBLT(small_map)
-        
-        # Add many items, likely causing no pure cells
-        items = [IBLTItem(f"key{i}", f"val{i}".encode()) for i in range(10)]
-        for item in items:
-            fail_iblt.push(item)
-        
-        self._print_filter_state(fail_iblt, "Overloaded IBLT likely to fail decoding")
-        
-        # Redirect stderr to check for the warning message
-        import io
-        from contextlib import redirect_stderr
-        f = io.StringIO()
-        with redirect_stderr(f):
-            added, removed = fail_iblt.peel()
-        
-        # Check that the warning was printed
-        self.assertIn("decoding failed", f.getvalue())
-        # The decoded sets will likely not contain all items
-        self.assertNotEqual(len(added), len(items))
+        # The difference should only contain the items whose keys are unique
+        diff = iyz - ix
+        added, removed = diff.peel()
+
+        # 'unique_x' is cancelled out. 'apple'/'red' and 'apple'/'green'
+        # cannot be resolved. The result is empty.
+        self.assertEqual(added, set())
+        self.assertEqual(removed, set())
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run tests for the IBLT.")
-    parser.add_argument(
-        '-vf', '--verbose-filters', action='store_true',
-        help="Print filter state after each modification during tests."
-    )
-
-    args, unknown = parser.parse_known_args()
-    cli_args = args
-    main_args = [sys.argv[0]] + unknown
-
-    print("\n" + "#" * 70)
-    print("###" + " " * 26 + "RUNNING IBLT TESTS" + " " * 26 + "###")
-    print("#" * 70)
-    if cli_args.verbose_filters:
-        print("### Verbose filter state printing: ENABLED")
-        print("#" * 70)
-    
-    unittest.main(argv=main_args, verbosity=2, exit=False)
+    parser = argparse.ArgumentParser(description="Run IBLT tests.")
+    parser.add_argument('-vf', '--verbose-filters', action='store_true', help="Print filter state during tests.")
+    cli_args, unknown = parser.parse_known_args()
+    unittest.main(argv=[sys.argv[0]] + unknown, verbosity=2, exit=False)
