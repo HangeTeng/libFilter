@@ -3,8 +3,8 @@
 import heapq
 from typing import Any, Tuple, Iterator, Deque, List, Callable
 from collections import deque
-from .base import FilterBase
-from .utils import InputType, Hasher, IndexGenerator, _inputtype_to_bytes
+from ..core.base import FilterBase
+from ..core.utils import InputType, Hasher, IndexGenerator, _inputtype_to_bytes
 from .iblt import IBLTSymbol # RIBLT can reuse IBLTSymbol
 
 class RIBLT(FilterBase[IBLTSymbol]):

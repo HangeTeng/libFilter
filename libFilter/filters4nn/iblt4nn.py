@@ -7,8 +7,8 @@ import sys
 from typing import Set, Tuple, List, Dict, Any
 import galois
 
-from .prv import PRV
-from .base import FilterItem, PeelableSymbol, StandardFilter, FilterBase
+from ..core.prv import PRV
+from ..core.base import FilterItem, PeelableSymbol, StandardFilter, FilterBase
 from .utils import Hasher, HashMapping
 
 # ... (NNItem, NNSymbol, IBLT4NN 类的定义保持不变) ...

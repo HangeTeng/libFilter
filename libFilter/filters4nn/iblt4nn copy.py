@@ -6,8 +6,8 @@ import argparse
 import sys
 from typing import Set, Tuple, List, Dict, Any
 
-from .prv import PRV
-from .base import FilterItem, PeelableSymbol, StandardFilter, FilterBase
+from ..core.prv import PRV
+from ..core.base import FilterItem, PeelableSymbol, StandardFilter, FilterBase
 from .utils import Hasher, HashMapping
 
 # --- IBLT for Neural Networks, using PRV for peeling ---
