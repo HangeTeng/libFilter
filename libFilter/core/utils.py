@@ -256,16 +256,17 @@ class IndexGenerator:
 
     def jump(self) -> None:
         """Calculates and advances to the next index in the sequence."""
-        # This formula is from the "Robust and Rapid Set-Reconciliation..." paper.
-        r = self._prng.random()
+        # Get a random float in (0, 1] to avoid division by zero.
+        r = 1.0 - self._prng.random() # Maps to (0.0, 1.0]
         
-        # Add a small epsilon for numerical stability, preventing sqrt(0) -> division by zero.
-        denominator = math.sqrt(r + 1e-9)
-        factor = ((1 << 32) / denominator) - 1.0
+        # The factor is now simply derived from 1/sqrt(r).
+        # The scale of the increment can be tuned by an optional constant `C` if needed.
+        # Here we assume C=1.
+        factor = (1.0 / math.sqrt(r)) - 1.0
         
-        increment = math.ceil((self.curr + 1.5) * factor)
+        increment = math.ceil((float(self.curr) + 1.5) * factor)
         
-        # Ensure the index always advances by at least 1 to prevent getting stuck.
+        # The robust increment is still a good idea.
         self.curr += max(1, int(increment))
 
     def __repr__(self) -> str:
