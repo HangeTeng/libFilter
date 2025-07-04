@@ -1,4 +1,4 @@
-# tests/test_iblt4nn.py (With enhanced verbose printing for peel)
+# tests/test_iblt4nn.py
 
 """Tests for the IBLT for Neural Networks (IBLT4NN) implementation."""
 
@@ -8,7 +8,8 @@ import json
 
 from libFilter.core.prv import PRV
 from libFilter.core.utils import HashMapping
-from libFilter.filters4nn.iblt4nn import IBLT4NN, NNItem
+from libFilter.filters4nn.iblt4nn import IBLT4NN
+from libFilter.filters4nn.nn_utils import NNItem
 
 @pytest.fixture
 def nn_setup():
@@ -17,8 +18,8 @@ def nn_setup():
     hash_map = HashMapping.from_seeds(['NNS1', 'NNS2', 'NNS3'], table_size=50)
     prv = PRV(n=n_indices, prp_type='aes128')
     
-    client1_updates = [NNItem(10, 0.5), NNItem(1024, -0.1)]
-    client2_updates = [NNItem(10, 0.2), NNItem(100, 0.3)]
+    client1_updates = [NNItem(idx=10, weight=0.5), NNItem(idx=1024, weight=-0.1)]
+    client2_updates = [NNItem(idx=10, weight=0.2), NNItem(idx=100, weight=0.3)]
     
     return {
         'hash_map': hash_map,
@@ -28,87 +29,73 @@ def nn_setup():
     }
 
 def test_aggregation_and_peel(nn_setup, verbose_printer):
-    """Tests aggregation of updates and subsequent peeling with detailed output."""
-    map, prv = nn_setup['hash_map'], nn_setup['prv']
+    """Tests aggregation of updates and subsequent peeling."""
+    map_config, prv = nn_setup['hash_map'], nn_setup['prv']
     client1, client2 = nn_setup['client1'], nn_setup['client2']
     
-    agg_iblt = IBLT4NN(map, prv)
-    print("\n--- [Operation: Aggregating client updates] ---")
-    print(f"Client 1 updates: {[repr(i) for i in client1]}")
+    agg_iblt = IBLT4NN(map_config, prv)
+    
     for item in client1:
         agg_iblt.push(item)
-    
-    print(f"Client 2 updates: {[repr(i) for i in client2]}")
+    verbose_printer(agg_iblt, "After pushing Client 1 updates")
+
     for item in client2:
         agg_iblt.push(item)
-        
-    verbose_printer(agg_iblt, "IBLT state after aggregating all updates")
+    verbose_printer(agg_iblt, "After pushing Client 2 updates (final state)")
     
-    # --- Enhanced Peel Output ---
-    print("\n--- [Operation: Peeling the aggregated IBLT] ---")
-    decoded = agg_iblt.peel()
+    decoded = agg_iblt.peel(destructive=False)
     
-    # Use json.dumps for pretty-printing the decoded dictionary
-    decoded_str = json.dumps(decoded, indent=2)
-    print(f"Decoded items from peel:\n{decoded_str}")
-    # --- End of Enhanced Peel Output ---
-
-    expected = {
-        10: 0.5 + 0.2, # 0.7
-        1024: -0.1,
-        100: 0.3
-    }
+    # After a non-destructive peel, the original filter should be unchanged.
+    verbose_printer(agg_iblt, "Original IBLT state after non-destructive peel")
     
-    print("\n--- [Operation: Verifying results] ---")
-    print(f"Expected items:\n{json.dumps(expected, indent=2)}")
+    expected = {10: 0.7, 100: 0.3, 1024: -0.1}
     
     assert len(decoded) == len(expected)
-    for idx, val in expected.items():
+    for idx, weight in expected.items():
         assert idx in decoded
-        assert math.isclose(decoded[idx], val)
+        assert math.isclose(decoded[idx], weight)
+        
+    # Check if a destructive peel would leave the filter empty
+    final_state_checker = agg_iblt.copy()
+    final_state_checker.peel(destructive=True)
+    verbose_printer(final_state_checker, "State after destructive peel (should be empty)")
+    assert final_state_checker.is_fully_decoded()
 
 def test_merge_with_add_operator(nn_setup, verbose_printer):
     """Tests merging two IBLTs using `+` and `+=` operators."""
-    map, prv = nn_setup['hash_map'], nn_setup['prv']
+    map_config, prv = nn_setup['hash_map'], nn_setup['prv']
     client1, client2 = nn_setup['client1'], nn_setup['client2']
     
-    iblt1 = IBLT4NN(map, prv); [iblt1.push(i) for i in client1]
+    iblt1 = IBLT4NN(map_config, prv)
+    [iblt1.push(i) for i in client1]
     iblt1_copy = iblt1.copy()
+    verbose_printer(iblt1, "IBLT 1 (Client 1) initial state")
 
-    iblt2 = IBLT4NN(map, prv); [iblt2.push(i) for i in client2]
-    
-    verbose_printer(iblt1, "IBLT 1 state (Client 1)")
-    verbose_printer(iblt2, "IBLT 2 state (Client 2)")
+    iblt2 = IBLT4NN(map_config, prv)
+    [iblt2.push(i) for i in client2]
+    verbose_printer(iblt2, "IBLT 2 (Client 2) initial state")
     
     # Test `+` operator
     merged_iblt = iblt1 + iblt2
     verbose_printer(merged_iblt, "Merged IBLT state (from `+`)")
     
-    # --- Enhanced Peel Output for Merged IBLT ---
-    print("\n--- [Operation: Peeling the merged IBLT from `+` operator] ---")
     decoded = merged_iblt.peel()
-    decoded_str = json.dumps(decoded, indent=2)
-    print(f"Decoded items from merged IBLT:\n{decoded_str}")
-    # --- End of Enhanced Peel Output ---
     
-    expected = {10: 0.7, 1024: -0.1, 100: 0.3}
+    expected = {10: 0.7, 100: 0.3, 1024: -0.1}
     assert len(decoded) == len(expected)
-    assert math.isclose(decoded[10], expected[10])
+    assert math.isclose(decoded.get(10, 0), expected[10])
 
-    # Assert non-destructive nature of `+`
-    assert iblt1.to_dict() == iblt1_copy.to_dict(), "`+` should be non-destructive."
+    assert iblt1.to_dict() == iblt1_copy.to_dict()
     
-    # Test `+=` operator and verify its result
+    # Test `+=` operator
     iblt1 += iblt2
-    assert iblt1.to_dict() == merged_iblt.to_dict(), "`+=` should yield the same result as `+`."
-
-
-# ... (other tests: test_serialization, test_unsupported_operations remain the same) ...
+    verbose_printer(iblt1, "IBLT 1 state after `+=` IBLT 2")
+    assert iblt1.to_dict() == merged_iblt.to_dict()
 
 def test_serialization(nn_setup):
     """Tests that the IBLT with PRV can be serialized and deserialized correctly."""
-    map, prv = nn_setup['hash_map'], nn_setup['prv']
-    iblt = IBLT4NN(map, prv)
+    map_config, prv = nn_setup['hash_map'], nn_setup['prv']
+    iblt = IBLT4NN(map_config, prv)
     for item in nn_setup['client1']:
         iblt.push(item)
         
@@ -119,12 +106,14 @@ def test_serialization(nn_setup):
     assert rebuilt_iblt.peel() == iblt.peel()
 
 def test_unsupported_operations(nn_setup):
-    """Ensures that disabled operations raise NotImplementedError."""
+    """Ensures that disabled user-facing operations raise NotImplementedError."""
     iblt = IBLT4NN(nn_setup['hash_map'], nn_setup['prv'])
     
-    with pytest.raises(NotImplementedError):
-        _ = iblt - iblt
-    with pytest.raises(NotImplementedError):
-        iblt -= iblt
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(NotImplementedError, match="does not support `remove`"):
         iblt.remove(nn_setup['client1'][0])
+    
+    with pytest.raises(NotImplementedError, match="does not support the `-` operation"):
+        _ = iblt - iblt
+        
+    with pytest.raises(NotImplementedError, match="does not support the `-=` operation"):
+        iblt -= iblt

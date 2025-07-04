@@ -3,15 +3,18 @@
 """
 Implementation of a Robust Invertible Bloom Lookup Table (RIBLT).
 
-The RIBLT is a probabilistic data structure for set reconciliation that,
-unlike a standard IBLT, does not require a pre-set size. It can dynamically
-grow and process a stream of items, making it "robust" to unknown set
-difference sizes. Decoding can be performed incrementally as more data arrives.
+This version incorporates a hash_sum field for robust, self-verifying
+purity checks in cells, making it resilient to key/value collisions.
+The index generation is based solely on the item's key. The implementation
+is refactored for clarity, logical cohesion, and efficiency, and its
+behavior aligns with standard IBLT principles for strict key-value pair
+reconciliation.
 """
 
 from __future__ import annotations
-from typing import Set, Tuple, List, Dict, Any, Type, Optional, Iterator
+from typing import Set, Tuple, List, Dict, Any, Type, Optional
 import heapq
+import hashlib
 
 # Relative imports from within the library.
 from ..core.base import FilterItem, PeelableSymbol, FilterBase
@@ -20,10 +23,14 @@ from ..core.utils import (
     serialize_typed_value, deserialize_typed_value
 )
 
-# --- RIBLT-specific Components (reusing IBLT's Item and Symbol) ---
+# --- Helper for hash_sum ---
+def _hash_key(key_bytes: bytes) -> bytes:
+    """A consistent hash function for the key part of a symbol."""
+    return hashlib.sha256(key_bytes).digest()
 
-# For set-reconciliation, RIBLT's item and symbol structure is identical to IBLT's.
-# We can re-use them directly or alias them for clarity.
+
+# --- RIBLT-specific Components ---
+
 class RIBLTItem(FilterItem):
     """An item for a RIBLT, containing a key-value pair."""
     __slots__ = ('key', 'value')
@@ -49,47 +56,68 @@ class RIBLTItem(FilterItem):
 
 
 class RIBLTSymbol(PeelableSymbol):
-    """A cell (symbol) in a RIBLT, identical in structure to an IBLTSymbol."""
-    __slots__ = ('count', 'key_sum', 'value_sum')
+    """
+    A cell in a RIBLT, with a hash_sum for self-verification.
+    """
+    __slots__ = ('count', 'key_sum', 'value_sum', 'hash_sum')
 
-    def __init__(self, count: int = 0, key_sum: bytes = b'', value_sum: bytes = b''):
-        super().__init__(count=count, key_sum=key_sum, value_sum=value_sum)
+    def __init__(self, count: int = 0, key_sum: bytes = b'', value_sum: bytes = b'', hash_sum: bytes = b''):
+        super().__init__(count=count, key_sum=key_sum, value_sum=value_sum, hash_sum=hash_sum)
         self.count = count
         self.key_sum = key_sum
         self.value_sum = value_sum
+        self.hash_sum = hash_sum
 
     def __iadd__(self, other: RIBLTSymbol) -> RIBLTSymbol:
         self.count += other.count
         self.key_sum = _xor_bytes(self.key_sum, other.key_sum)
         self.value_sum = _xor_bytes(self.value_sum, other.value_sum)
+        self.hash_sum = _xor_bytes(self.hash_sum, other.hash_sum)
         return self
 
     def __isub__(self, other: RIBLTSymbol) -> RIBLTSymbol:
         self.count -= other.count
         self.key_sum = _xor_bytes(self.key_sum, other.key_sum)
         self.value_sum = _xor_bytes(self.value_sum, other.value_sum)
+        self.hash_sum = _xor_bytes(self.hash_sum, other.hash_sum)
         return self
 
     def is_empty(self) -> bool:
-        key_is_zero = not self.key_sum or all(b == 0 for b in self.key_sum)
-        value_is_zero = not self.value_sum or all(b == 0 for b in self.value_sum)
-        return self.count == 0 and key_is_zero and value_is_zero
+        """
+        A cell is empty only if all its components are zero. This provides
+        strict checking for full reconciliation, including values.
+        """
+        return (self.count == 0 and
+                (not self.key_sum or all(b == 0 for b in self.key_sum)) and
+                (not self.value_sum or all(b == 0 for b in self.value_sum)) and
+                (not self.hash_sum or all(b == 0 for b in self.hash_sum)))
 
     def is_pure(self) -> bool:
+        """
+        A symbol is pure if it represents a single, verifiable item.
+        """
         if not (self.count == 1 or self.count == -1):
             return False
-        # To be truly pure, the key must also hash to the value (or a hash thereof).
-        # This IBLT/RIBLT version relies on being a "dumb" container, where peeling
-        # and checking happens externally or is assumed correct. For simplicity,
-        # we only check the count here, matching the C++ `isPure` core logic.
-        return True
+        
+        if not self.key_sum:
+            return False
+        expected_hash = _hash_key(self.key_sum)
+        return self.hash_sum == expected_hash
 
     def get_state(self) -> Dict[str, Any]:
-        return {'count': self.count, 'key_sum': self.key_sum, 'value_sum': self.value_sum}
+        return {
+            'count': self.count, 
+            'key_sum': self.key_sum, 
+            'value_sum': self.value_sum, 
+            'hash_sum': self.hash_sum
+        }
 
     @classmethod
     def from_item(cls: Type[RIBLTSymbol], item: RIBLTItem, **kwargs: Any) -> RIBLTSymbol:
-        return cls(1, serialize_typed_value(item.key), serialize_typed_value(item.value))
+        key_b = serialize_typed_value(item.key)
+        val_b = serialize_typed_value(item.value)
+        hash_b = _hash_key(key_b)
+        return cls(1, key_b, val_b, hash_b)
 
     @classmethod
     def to_item(cls, symbol: RIBLTSymbol) -> RIBLTItem:
@@ -102,52 +130,42 @@ class RIBLTSymbol(PeelableSymbol):
 
 class SymbolQueue:
     """
-    A queue for managing symbols whose index sequences extend beyond the
-    current size of the RIBLT. It uses a min-heap to efficiently find
-    the next symbol to process when the RIBLT expands.
+    A self-managing queue that stores symbols and handles their diffusion
+    into the RIBLT's cells as the table expands.
     """
     __slots__ = ('_heap', '_entries', '_next_id')
 
     def __init__(self):
-        self._heap = []  # The min-heap: (next_index, entry_id, symbol_entry)
-        self._entries = {} # Maps entry_id to symbol_entry for updates
-        self._next_id = 0 # Unique ID to handle heap tie-breaking
+        self._heap: List[Tuple[int, int]] = []
+        self._entries: Dict[int, Dict[str, Any]] = {}
+        self._next_id = 0
 
-    def enqueue(self, symbol: RIBLTSymbol, generator: IndexGenerator):
-        """Adds a new symbol and its generator to the queue."""
+    def enqueue_and_diffuse(self, symbol: RIBLTSymbol, generator: IndexGenerator, cells: List[RIBLTSymbol]):
+        while generator.curr < len(cells):
+            cells[generator.curr] += symbol
+            generator.jump()
+        
         entry_id = self._next_id
-        symbol_entry = {'symbol': symbol, 'generator': generator}
-        self._entries[entry_id] = symbol_entry
-        heap_item = (generator.curr, entry_id)
-        heapq.heappush(self._heap, heap_item)
+        self._entries[entry_id] = {'symbol': symbol, 'generator': generator}
+        heapq.heappush(self._heap, (generator.curr, entry_id))
         self._next_id += 1
 
-    def next_coded_index(self) -> int:
-        """Returns the index of the next symbol to be processed, or infinity."""
-        return self._heap[0][0] if self._heap else float('inf')
-
-    def pop_and_reschedule(self) -> Tuple[RIBLTSymbol, IndexGenerator]:
-        """
-        Pops the symbol with the smallest next index, updates its generator,
-        and reschedules it in the queue.
-        """
-        next_idx, entry_id = heapq.heappop(self._heap)
-        
-        entry = self._entries.pop(entry_id)
-        symbol = entry['symbol']
-        generator = entry['generator']
-
-        # The generator is advanced by the calling `diffuse` function.
-        # We just need to re-enqueue it with its new `curr` index.
-        self.enqueue(symbol, generator)
-        
-        # Return a copy of the generator state at the time of popping
-        return symbol, generator
-
-    def top_generator(self) -> IndexGenerator:
-        """Returns the generator of the top item without removing it."""
-        entry_id = self._heap[0][1]
-        return self._entries[entry_id]['generator']
+    def expand_and_diffuse(self, cells: List[RIBLTSymbol]):
+        limit_index = len(cells)
+        while self._heap and self._heap[0][0] < limit_index:
+            top_entry_id = self._heap[0][1]
+            entry = self._entries[top_entry_id]
+            symbol, generator = entry['symbol'], entry['generator']
+            
+            while generator.curr < limit_index:
+                cells[generator.curr] += symbol
+                generator.jump()
+            
+            heapq.heapreplace(self._heap, (generator.curr, top_entry_id))
+    
+    def clear(self):
+        self._heap.clear()
+        self._entries.clear()
         
     def __len__(self) -> int:
         return len(self._entries)
@@ -155,11 +173,11 @@ class SymbolQueue:
 
 class RIBLT(FilterBase[RIBLTSymbol, RIBLTItem]):
     """
-    A Robust Invertible Bloom Lookup Table.
+    A Robust Invertible Bloom Lookup Table (with hash_sum verification).
     """
     __slots__ = (
-        'cells', '_symbol_queue', '_seed', '_peeled_items',
-        '_next_peel_idx', 'done_expanding'
+        'cells', '_symbol_queue', '_seed', '_added_items', '_removed_items',
+        '_peeled_indices', 'done_expanding'
     )
 
     def __init__(self, seed: Any = "default_riblt_seed"):
@@ -167,152 +185,106 @@ class RIBLT(FilterBase[RIBLTSymbol, RIBLTItem]):
         self._seed = seed
         self._symbol_queue = SymbolQueue()
         self.done_expanding = False
-        
-        # --- Attributes for Incremental Peeling ---
-        self._peeled_items: Set[RIBLTItem] = set()
-        self._next_peel_idx = 0
+        self._added_items: Set[RIBLTItem] = set()
+        self._removed_items: Set[RIBLTItem] = set()
+        self._peeled_indices: Set[int] = set()
+
+    def _get_generator_for_item(self, item_key: InputType) -> IndexGenerator:
+        return IndexGenerator(key=item_key, seed=self._seed)
+
+    def _process_item(self, item: RIBLTItem, count: int):
+        if self.done_expanding:
+            raise RuntimeError("Cannot modify RIBLT after calling `set_done_expanding`.")
+
+        if count == 1 and item in self._removed_items:
+            self._removed_items.remove(item)
+            return
+        if count == -1 and item in self._added_items:
+            self._added_items.remove(item)
+            return
+
+        symbol = RIBLTSymbol.from_item(item)
+        symbol.count = count
+        generator = self._get_generator_for_item(item.get_key())
+        self._symbol_queue.enqueue_and_diffuse(symbol, generator, self.cells)
 
     def push(self, item: RIBLTItem) -> None:
-        """Adds an item to the RIBLT."""
-        self._diffuse(RIBLTSymbol.from_item(item), is_new_item=True)
-        
+        self._process_item(item, 1)
+
     def remove(self, item: RIBLTItem) -> None:
-        """Subtracts an item from the RIBLT."""
-        symbol = RIBLTSymbol.from_item(item)
-        # Negate the count for subtraction
-        symbol.count = -1
-        self._diffuse(symbol, is_new_item=True)
-
-    def _diffuse(self, symbol: RIBLTSymbol, is_new_item: bool, generator: IndexGenerator = None):
-        """
-        Spreads a symbol's contribution across the filter's cells.
-        If `is_new_item` is True, a new generator is created.
-        """
-        if self.done_expanding and is_new_item:
-            raise RuntimeError("Cannot add new items after calling `set_done_expanding`.")
-
-        if generator is None:
-            # For new items, create a fresh generator.
-            # We use the raw key/value sum as the seed source for the generator.
-            # This ensures add/remove ops on the same item use the same index sequence.
-            key_for_gen = symbol.key_sum + symbol.value_sum
-            generator = IndexGenerator(key=key_for_gen, seed=self._seed)
-
-        # Diffuse the symbol as far as possible within the current bounds.
-        while generator.curr < len(self.cells):
-            self.cells[generator.curr] += symbol
-            generator.jump()
-
-        # If it's a new item that will continue to evolve, enqueue it.
-        if is_new_item and not self.done_expanding:
-            self._symbol_queue.enqueue(symbol, generator)
+        self._process_item(item, -1)
 
     def expand(self, n: int):
-        """Expands the RIBLT by `n` cells, processing queued symbols."""
         if self.done_expanding:
             raise RuntimeError("Cannot expand after calling `set_done_expanding`.")
-        
-        current_size = len(self.cells)
-        new_size = current_size + n
-        self.cells.extend([RIBLTSymbol() for _ in range(n)])
+        if n <= 0: return
 
-        # Process any queued symbols that now fall within the new bounds.
-        while self._symbol_queue and self._symbol_queue.next_coded_index() < new_size:
-            symbol, generator = self._symbol_queue.pop_and_reschedule()
-            # This is not a new item, so `is_new_item` is False.
-            self._diffuse(symbol, is_new_item=False, generator=generator)
+        self.cells.extend([RIBLTSymbol() for _ in range(n)])
+        self._symbol_queue.expand_and_diffuse(self.cells)
 
     def set_done_expanding(self):
-        """
-        Signals that no more items will be added. This allows the symbol
-        queue to be cleared to save memory.
-        """
         self.done_expanding = True
-        self._symbol_queue = SymbolQueue() # Free memory
+        self._symbol_queue.clear()
 
-    def peel(self) -> None:
-        """
-        Performs an incremental peel operation.
-        
-        This method attempts to decode items from the current state of the RIBLT.
-        Successfully decoded items are stored in the `added_items` and
-        `removed_items` properties and are subtracted from the RIBLT state.
-        
-        This method can be called multiple times. If the first call doesn't
-        fully decode the filter, you can `push`/`remove` more items and then
-        call `peel` again to continue the process.
-        """
-        pure_indices = []
-        # Scan for new pure cells since the last peel operation.
-        for i in range(self._next_peel_idx, len(self.cells)):
-            if self.cells[i].is_pure():
-                pure_indices.append(i)
-        self._next_peel_idx = len(self.cells)
+    def peel(self) -> bool:
+        items_peeled_this_round = 0
+        pure_indices = [
+            i for i in range(len(self.cells) - 1, -1, -1) 
+            if self.cells[i].is_pure() and i not in self._peeled_indices
+        ]
 
         while pure_indices:
             idx = pure_indices.pop()
-            cell = self.cells[idx]
             
-            if not cell.is_pure():
-                continue
-
-            item = RIBLTSymbol.to_item(cell)
-            
-            # If we've already peeled this item, it means it was part of a
-            # more complex structure that has now resolved. We can ignore it.
-            if item in self._peeled_items:
+            if not self.cells[idx].is_pure():
                 continue
                 
-            self._peeled_items.add(item)
+            self._peeled_indices.add(idx)
             
-            # Subtract the peeled item's contribution from the RIBLT.
-            # This is like `remove`, but uses the already negated count if needed.
-            symbol_to_peel = RIBLTSymbol(
-                count=-cell.count, # If count was 1, subtract 1. If -1, add 1.
-                key_sum=cell.key_sum,
-                value_sum=cell.value_sum
+            cell_to_peel = self.cells[idx]
+            item = RIBLTSymbol.to_item(cell_to_peel)
+            
+            items_peeled_this_round += 1
+            if cell_to_peel.count == 1:
+                self._added_items.add(item)
+            else:
+                self._removed_items.add(item)
+            
+            inverse_symbol = RIBLTSymbol(
+                count=cell_to_peel.count,
+                key_sum=cell_to_peel.key_sum,
+                value_sum=cell_to_peel.value_sum,
+                hash_sum=cell_to_peel.hash_sum
             )
 
-            # We must use a new generator for the peeling diffusion.
-            key_for_gen = symbol_to_peel.key_sum + symbol_to_peel.value_sum
-            peel_generator = IndexGenerator(key=key_for_gen, seed=self._seed)
+            peel_generator = self._get_generator_for_item(item.get_key())
             
-            # Diffuse the negated symbol.
             while peel_generator.curr < len(self.cells):
                 affected_idx = peel_generator.curr
-                self.cells[affected_idx] += symbol_to_peel
-                
-                # Check if this action created a new pure cell.
-                if self.cells[affected_idx].is_pure():
-                    pure_indices.append(affected_idx)
-                
+                if affected_idx != idx and affected_idx not in self._peeled_indices:
+                    self.cells[affected_idx] -= inverse_symbol
+                    if self.cells[affected_idx].is_pure():
+                        pure_indices.append(affected_idx)
                 peel_generator.jump()
+            
+            self.cells[idx] = RIBLTSymbol()
+
+        return items_peeled_this_round > 0
 
     @property
     def added_items(self) -> Set[RIBLTItem]:
-        """Returns the set of successfully peeled items with a positive count."""
-        # This is a placeholder; a real implementation might track counts.
-        # For simple diff, we assume peeled items are the 'added' set.
-        return self._peeled_items
+        return self._added_items
     
     @property
     def removed_items(self) -> Set[RIBLTItem]:
-        """Returns the set of successfully peeled items with a negative count."""
-        # This RIBLT doesn't distinguish between added/removed in the peeled set.
-        # For a full diff, one would need to inspect the original cell's count.
-        # For now, we return an empty set.
-        return set()
+        return self._removed_items
 
     def is_fully_decoded(self) -> bool:
-        """Checks if the RIBLT is empty, indicating successful peeling."""
         return all(c.is_empty() for c in self.cells)
 
-    # --- Serialization and other base methods ---
-    # For RIBLT, full serialization is complex due to the queue state.
-    # We provide a minimal implementation.
     def to_dict(self) -> Dict[str, Any]:
-        raise NotImplementedError("Full serialization for RIBLT is complex and not yet implemented.")
+        raise NotImplementedError("Full serialization for streaming RIBLT is non-trivial.")
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RIBLT":
-        raise NotImplementedError("Full serialization for RIBLT is complex and not yet implemented.")
+        raise NotImplementedError("Full serialization for streaming RIBLT is non-trivial.")
