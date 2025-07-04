@@ -1,6 +1,3 @@
-好的，遵命。这里是完整的 `README.md` 内容，全部放在一个代码块中，方便您直接复制粘贴。
-
-```markdown
 <p align="center">
   <!-- You can place a project logo or title image here -->
   <!-- e.g., <img src="path/to/your/logo.png" alt="libFilter Logo" width="400"/> -->
@@ -158,4 +155,3 @@ If you use `libFilter` in your research or project, please consider citing it.
 [GMR2011] - Michael T. Goodrich, Michael Mitzenmacher, and Rasmus Pagh, _Invertible Bloom lookup tables_.
 
 (You can continue to list other relevant papers for the algorithms implemented.)
-```
