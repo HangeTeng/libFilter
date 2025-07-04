@@ -1,0 +1,16 @@
+# requirements.txt
+#
+# This file lists the dependencies for development and testing.
+# For installing the library, please refer to pyproject.toml.
+
+# --- Runtime Dependencies ---
+
+# For finite field arithmetic used in IBLT4NN and RIBLT4NN
+galois
+
+# For cryptographic primitives (AES, DES) used in PRV
+pycryptodome
+
+# --- Test Dependencies ---
+# To install test dependencies: pip install -r requirements.txt
+pytest
