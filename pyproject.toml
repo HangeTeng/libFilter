@@ -1,0 +1,49 @@
+# pyproject.toml
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "libfilter"
+version = "0.1.0"
+authors = [
+  { name="Your Name", email="youremail@example.com" },
+]
+description = "An advanced library of probabilistic data structures and filters, including IBLT, RIBLT, and variants for secure aggregation."
+readme = "README.md"
+license = { file="LICENSE" } # 假设你有一个 MIT 许可证文件
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "galois",
+    "pycryptodome",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/your-username/libFilter"
+"Bug Tracker" = "https://github.com/your-username/libFilter/issues"
+"Repository" = "https://github.com/your-username/libFilter.git"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["libFilter*"]
+exclude = ["tests*"]

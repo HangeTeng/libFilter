@@ -4,8 +4,6 @@
   <h1 align="center">libFilter</h1>
 </p>
 
-=====
-
 <!-- Add a build status badge from GitHub Actions here -->
 <!-- ![Build Status](https://github.com/your-username/libFilter/actions/workflows/build-test.yml/badge.svg) -->
 
