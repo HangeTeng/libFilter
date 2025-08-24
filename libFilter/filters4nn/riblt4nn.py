@@ -36,7 +36,7 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         nonce = 0
         while True:
             data_to_hash = _normalize_input(idx) + b'-' + _normalize_input(nonce)
-            r_int = self._mask_hasher.digest_int(data_to_hash, nbytes=16)
+            r_int = self._mask_hasher.digest_int(data_to_hash, nbytes=self._prv.prp_bits//8)
             if r_int != 0: return self._prv.GF(r_int)
             nonce += 1
     def _get_generator_for_item(self, item_key: int) -> IndexGenerator:

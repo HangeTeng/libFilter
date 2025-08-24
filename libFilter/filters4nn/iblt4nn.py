@@ -44,7 +44,7 @@ class IBLT4NN(StandardFilter[NNSymbol, NNItem]):
             
             # Use the hasher to get a deterministic integer from the combined data.
             # This approach is simpler and correct.
-            r_int = self._mask_hasher.digest_int(data_to_hash, nbytes=16)
+            r_int = self._mask_hasher.digest_int(data_to_hash, nbytes=self.prv.prp_bits//8)
 
             # If we found a non-zero value, we are done.
             if r_int != 0:

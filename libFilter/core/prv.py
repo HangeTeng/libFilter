@@ -15,6 +15,10 @@ from typing import Dict, Any, Optional
 import galois
 from Crypto.Cipher import AES, DES
 
+# TODO:
+# 可以考虑引入 ffex 库，实现格式保持加密（Format-Preserving Encryption, FPE），
+# 以支持可变比特数的加密映射，例如将 48 位映射到 48 位，或 40 位映射到 40 位等场景。
+
 class PRV:
     """
     A Pseudo-Random Vector that maps indices to finite field elements.
