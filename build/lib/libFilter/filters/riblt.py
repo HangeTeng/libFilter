@@ -119,11 +119,12 @@ class RIBLTSymbol(PeelableSymbol):
         hash_b = _hash_key(key_b)
         return cls(1, key_b, val_b, hash_b)
 
-    def to_item(self) -> RIBLTItem:
-        if not self.is_pure():
+    @classmethod
+    def to_item(cls, symbol: RIBLTSymbol) -> RIBLTItem:
+        if not symbol.is_pure():
             raise ValueError("Cannot decode item from a non-pure symbol.")
-        key = deserialize_typed_value(self.key_sum)
-        value = deserialize_typed_value(self.value_sum)
+        key = deserialize_typed_value(symbol.key_sum)
+        value = deserialize_typed_value(symbol.value_sum)
         return RIBLTItem(key, value)
 
 
@@ -241,7 +242,7 @@ class RIBLT(FilterBase[RIBLTSymbol, RIBLTItem]):
             self._peeled_indices.add(idx)
             
             cell_to_peel = self.cells[idx]
-            item = cell_to_peel.to_item()
+            item = RIBLTSymbol.to_item(cell_to_peel)
             
             items_peeled_this_round += 1
             if cell_to_peel.count == 1:

@@ -81,8 +81,9 @@ class PeelableSymbol(FilterSymbol):
     def is_pure(self) -> bool:
         raise NotImplementedError
 
+    @classmethod
     @abc.abstractmethod
-    def to_item(self) -> ItemType:
+    def to_item(cls, symbol: PeelableSymbol) -> ItemType:
         raise NotImplementedError
 
 

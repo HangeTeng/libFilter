@@ -130,16 +130,17 @@ class IBLTSymbol(PeelableSymbol):
             value_sum=serialize_typed_value(item.value)
         )
 
-    def to_item(self) -> IBLTItem:
+    @classmethod
+    def to_item(cls, symbol: IBLTSymbol) -> IBLTItem:
         """Decodes a pure symbol back into an IBLTItem."""
-        if not self.is_pure():
+        if not symbol.is_pure():
             raise ValueError(
                 "Cannot decode item from a non-pure symbol "
-                f"(count is {self.count})."
+                f"(count is {symbol.count})."
             )
         
-        key = deserialize_typed_value(self.key_sum)
-        value = deserialize_typed_value(self.value_sum)
+        key = deserialize_typed_value(symbol.key_sum)
+        value = deserialize_typed_value(symbol.value_sum)
         return IBLTItem(key, value)
 
 
@@ -187,7 +188,7 @@ class IBLT(StandardFilter[IBLTSymbol, IBLTItem]):
             if not cell.is_pure():
                 continue
             
-            item = cell.to_item(cell)
+            item = self.symbol_type.to_item(cell)
 
             if cell.count == 1:
                 added.add(item)

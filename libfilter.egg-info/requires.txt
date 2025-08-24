@@ -1,0 +1,5 @@
+galois
+pycryptodome
+
+[test]
+pytest

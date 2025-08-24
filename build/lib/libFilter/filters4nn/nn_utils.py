@@ -89,24 +89,6 @@ class NNSymbol(PeelableSymbol):
         self._zero_if_close()
         return self
 
-    def div_scalar(self, scalar: int) -> "NNSymbol":
-        if scalar == 0:
-            raise ZeroDivisionError("Cannot divide by zero in the field.")
-        if scalar == 1:
-            return self
-
-        self.mask_sum /= self.GF(scalar)
-        self.idx_code_sum /= self.GF(scalar)
-        self.weight_sum /= scalar
-        # print("self.weight_sum",self.weight_sum)
-        self._zero_if_close()
-        return self
-
-    def mul_scalar_weight(self, scalar: int) -> "NNSymbol":
-        self.weight_sum *= scalar
-        self._zero_if_close()
-        return self
-
     def is_empty(self) -> bool:
         """
         A symbol is empty if all its components are zero.
@@ -162,69 +144,16 @@ class NNSymbol(PeelableSymbol):
             weight_sum=item.weight
         )
 
-    def to_item(self,prv: PRV) -> NNItem:
+    @classmethod
+    def to_item(cls, symbol: "NNSymbol", prv: PRV) -> NNItem:
         """Decodes a pure symbol back into an NNItem."""
-        if not self.is_pure(prv):
+        if not symbol.is_pure(prv):
             raise ValueError("Cannot convert a non-pure symbol to an item.")
             
-        potential_code = self.idx_code_sum / self.mask_sum
+        potential_code = symbol.idx_code_sum / symbol.mask_sum
         original_idx = prv.index(int(potential_code))
         
         if original_idx is None:
             raise ValueError("Failed to decode a valid index from the symbol.")
             
-        return NNItem(original_idx, self.weight_sum)
-
-        # INSERT_YOUR_CODE
-
-class NNSymbol_unsec:
-    """
-    A simplified, 'unsecured' NNSymbol variant that does not require a PRV for decoding.
-    Instead, it stores a count, idx_sum, and weight_sum, similar to IBLTSymbol logic.
-    Addition and subtraction are supported.
-    """
-    __slots__ = ("count", "idx_sum", "weight_sum")
-
-    def __init__(self, count: int = 0, idx_sum: int = 0, weight_sum: float = 0.0):
-        self.count = count
-        self.idx_sum = idx_sum
-        self.weight_sum = weight_sum
-
-    def __iadd__(self, other: "NNSymbol_unsec") -> "NNSymbol_unsec":
-        self.count += other.count
-        self.idx_sum += other.idx_sum
-        self.weight_sum += other.weight_sum
-        return self
-
-    def __isub__(self, other: "NNSymbol_unsec") -> "NNSymbol_unsec":
-        self.count -= other.count
-        self.idx_sum -= other.idx_sum
-        self.weight_sum -= other.weight_sum
-        return self
-
-    def is_empty(self) -> bool:
-        return self.count == 0 and self.idx_sum == 0 and self.weight_sum == 0.0
-
-    def is_pure(self) -> bool:
-        return self.count == 1 or self.count == -1
-
-    def get_state(self) -> Dict[str, Any]:
-        return {
-            "count": self.count,
-            "idx_sum": self.idx_sum,
-            "weight_sum": self.weight_sum
-        }
-
-    @classmethod
-    def from_item(cls, item: "NNItem") -> "NNSymbol_unsec":
-        return cls(count=1, idx_sum=item.idx, weight_sum=item.weight)
-
-    def to_item(self) -> "NNItem":
-        if not self.is_pure():
-            raise ValueError("Cannot decode item from a non-pure symbol (count is {}).".format(self.count))
-        idx = self.idx_sum // self.count
-        weight = self.weight_sum / self.count
-        return NNItem(idx, weight)
-
-    def copy(self) -> "NNSymbol_unsec":
-        return NNSymbol_unsec(self.count, self.idx_sum, self.weight_sum)
+        return NNItem(original_idx, symbol.weight_sum)

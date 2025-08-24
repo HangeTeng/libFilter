@@ -5,7 +5,6 @@ Implementation of an IBLT for Neural Network (NN) gradient aggregation.
 """
 
 from __future__ import annotations
-from locale import delocalize
 from typing import Dict, Any, Type
 
 from ..core.prv import PRV
@@ -111,25 +110,17 @@ class IBLT4NN(StandardFilter[NNSymbol, NNItem]):
             
             if not cell.is_pure(decoder.prv):
                 continue
-
+            
             # Create a safe, independent copy of the symbol for peeling.
             symbol_to_peel = cell.copy()
-            item = symbol_to_peel.to_item(prv=decoder.prv)
-
-            # if item.idx in [3567,3414,6532,2975,4945]:
-            #     print("item.idx",item.idx)
-            #     print("idx",idx)
-            #     print("affected_indices",list(decoder._get_indices(item.get_key())))
+            item = decoder.symbol_type.to_item(symbol_to_peel, prv=decoder.prv)
 
             if item.idx in decoded_weights:
                 continue
             
-            affected_indices = list(decoder._get_indices(item.get_key()))
-            scalar = affected_indices.count(idx)
-            symbol_to_peel.div_scalar(scalar)
-
-            decoded_weights[item.idx] = item.weight / scalar
+            decoded_weights[item.idx] = item.weight
             
+            affected_indices = list(decoder._get_indices(item.get_key()))
             for affected_idx in affected_indices:
                 affected_cell = decoder.cells[affected_idx]
                 affected_cell -= symbol_to_peel
@@ -138,27 +129,12 @@ class IBLT4NN(StandardFilter[NNSymbol, NNItem]):
                     
         if not all(c.is_empty() for c in decoder.cells):
             print("Warning: IBLT4NN decoding may be incomplete.")
-            # # 只保留前后 5 个未剥离 cell 的索引，并补充总数量
-            # unpeeled_indices = [i for i, c in enumerate(decoder.cells) if not c.is_empty()]
-            # n = len(unpeeled_indices)
-            # if n > 10:
-            #     display_indices = unpeeled_indices[:5] + ["..."] + unpeeled_indices[-5:]
-            # else:
-            #     display_indices = unpeeled_indices
-            # print(f"Unpeeled cell (total {n}):", display_indices)
-        # else:
-        #     print("IBLT4NN is fully decoded")
-
+            
         return decoded_weights
 
     def is_fully_decoded(self) -> bool:
         """Checks if all cells are empty, indicating complete decoding."""
         return all(c.is_empty() for c in self.cells)
-    
-    def scalar_mul_weight(self, scalar: float):
-        """Multiplies all cells by a scalar."""
-        for cell in self.cells:
-            cell.mul_scalar_weight(scalar)
     
     def remove(self, item: NNItem):
         """User-facing removal of single items is not supported."""

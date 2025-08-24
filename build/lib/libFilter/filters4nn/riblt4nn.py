@@ -17,10 +17,11 @@ from ..filters.riblt import SymbolQueue as RIBLTSymbolQueue
 class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
     """
     A Rate-less, streaming IBLT for secure numerical aggregation.
+    Serialization and copying are only supported for finalized filters.
     """
     __slots__ = (
         'cells', '_symbol_queue', '_prv', '_mask_hasher', '_diffusion_seed',
-        '_decoded_weights', '_peeled_indices'
+        '_decoded_weights', '_peeled_indices', 'done_expanding'
     )
 
     def __init__(self, prv: PRV, mask_seed: Any = "default_mask_seed", diffusion_seed: Any = "default_diffusion_seed"):
@@ -29,9 +30,11 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         self._mask_hasher = Hasher(seed=mask_seed)
         self._diffusion_seed = diffusion_seed
         self._symbol_queue = RIBLTSymbolQueue()
+        self.done_expanding = False
         self._decoded_weights: Dict[int, float] = {}
         self._peeled_indices: Set[int] = set()
 
+    # ... (_get_mask_for_idx, _get_generator_for_item are correct) ...
     def _get_mask_for_idx(self, idx: int) -> "galois.FieldArray":
         nonce = 0
         while True:
@@ -44,7 +47,8 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RIBLT4NN":
-        # No done_expanding check
+        if not data.get('done_expanding', False):
+            raise ValueError("Deserialization is only supported for finalized RIBLT4NN instances.")
         prv_config = data['prv']
         key_bytes = prv_config.get('key')
         if isinstance(key_bytes, list): key_bytes = bytes(key_bytes)
@@ -52,70 +56,54 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         instance = cls(prv, data['mask_seed'], data['diffusion_seed'])
         GF = prv.GF
         instance.cells = [NNSymbol(GF, **s_data) for s_data in data['cells']]
+        instance.set_done_expanding()
         return instance
 
     def to_dict(self) -> Dict[str, Any]:
         """
         Serializes the filter's state into a dictionary.
+        Only supported for finalized filters.
         """
+        if not self.done_expanding:
+            raise RuntimeError("Serialization is only supported for finalized RIBLT4NN instances.")
+
+        # --- THIS IS THE FIX ---
+        # Changed self.prv to self._prv
         key_list = list(self._prv.key) if self._prv.key else None
+        
         return {
             'cells': [s.get_state() for s in self.cells],
             'prv': {'n': self._prv.n, 'prp_type': self._prv.prp_type, 'key': key_list},
             'mask_seed': self._mask_hasher.seed,
             'diffusion_seed': self._diffusion_seed,
+            'done_expanding': self.done_expanding,
         }
 
     def copy(self) -> "RIBLT4NN":
         """
         Creates a deep copy of the filter.
+        Only supported for finalized filters.
         """
+        if not self.done_expanding:
+            raise RuntimeError("Copying is only supported for finalized RIBLT4NN instances.")
         return self.from_dict(self.to_dict())
 
+    # ... (push, expand, set_done_expanding, peel, and other methods are correct) ...
     def push(self, item: NNItem) -> None:
+        if self.done_expanding: raise RuntimeError("Cannot push to RIBLT4NN after finalization.")
         r = self._get_mask_for_idx(item.idx)
         source_symbol = NNSymbol.from_item(item, prv=self._prv, r=r)
         generator = self._get_generator_for_item(item.get_key())
         self._symbol_queue.enqueue_and_diffuse(source_symbol, generator, self.cells)
     def expand(self, n: int):
+        if self.done_expanding: raise RuntimeError("Cannot expand after finalization.")
         if n <= 0: return
         new_cells = [NNSymbol(self._prv.GF) for _ in range(n)]
         self.cells.extend(new_cells)
         self._symbol_queue.expand_and_diffuse(self.cells)
-
-    def slice_to_dict(self, start: int, end: int):
-        cells = self.cells[start:end]
-        return {
-            'cells': [s.get_state() for s in cells],
-            'prv': {'n': self._prv.n, 'prp_type': self._prv.prp_type, 'key': list(self._prv.key) if self._prv.key else None},
-            'mask_seed': self._mask_hasher.seed,
-            'diffusion_seed': self._diffusion_seed,
-            'start': start,
-            'end': end,
-        } 
-
-    def _check_params_dict_compatibility(self, params_dict):
-        expected_prv = {'n': self._prv.n, 'prp_type': self._prv.prp_type, 'key': list(self._prv.key) if self._prv.key else None}
-        if params_dict['prv'] != expected_prv:
-            raise ValueError("Cannot expand from a slice with a different PRV.")
-        if params_dict['mask_seed'] != self._mask_hasher.seed:
-            raise ValueError("Cannot expand from a slice with a different mask seed.")
-        if params_dict['diffusion_seed'] != self._diffusion_seed:
-            raise ValueError("Cannot expand from a slice with a different diffusion seed.")
-
-    # 从外部读入一个 cells 列表，并扩展到当前的 cells 列表
-    def expand_from_slice(self, slice_dict: Dict[str, Any]):
-        self._check_params_dict_compatibility(slice_dict)
-        if len(slice_dict['cells']) <= 0: 
-            raise ValueError("Cannot expand from an empty slice.")
-        if slice_dict['start'] < 0 or slice_dict['end'] < 0 or slice_dict['start'] >= slice_dict['end']:
-            raise ValueError("Invalid slice indices.")
-        if slice_dict['end'] > len(self.cells):
-            self.cells.extend([NNSymbol(self._prv.GF) for _ in range(slice_dict['end'] - len(self.cells))])
-        for i in range(slice_dict['start'], slice_dict['end']):
-            self.cells[i] += NNSymbol(self._prv.GF, **slice_dict['cells'][i - slice_dict['start']])
-        self._symbol_queue.expand_and_diffuse(self.cells)
-
+    def set_done_expanding(self):
+        self.done_expanding = True
+        self._symbol_queue.clear()
     def peel(self) -> bool:
         items_peeled_this_round = 0
         pure_indices = [
@@ -127,7 +115,7 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
             cell = self.cells[idx]
             if not cell.is_pure(self._prv): continue
             symbol_to_peel = cell.copy()
-            item = symbol_to_peel.to_item(self._prv)
+            item = NNSymbol.to_item(symbol_to_peel, self._prv)
             if item.idx in self._decoded_weights: continue
             items_peeled_this_round += 1
             self._decoded_weights[item.idx] = item.weight
@@ -138,29 +126,12 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
                 self.cells[affected_idx] -= symbol_to_peel
                 if self.cells[affected_idx].is_pure(self._prv):
                     pure_indices.append(affected_idx)
-        if not all(c.is_empty() for c in self.cells):
-            print("Warning: IBLT4NN decoding may be incomplete.")
-            # print("Unpeeled cell",
-            #     [(
-            #         i, 
-            #         c.idx_code_sum == 0,
-            #         c.mask_sum == 0,
-            #         c.weight_sum == 0,
-            #         self._prv.index(c.idx_code_sum/c.mask_sum),
-            #         self._prv.index(c.idx_code_sum/c.mask_sum) in self._decoded_weights,
-            #         c.is_pure(self._prv)
-            #     ) 
-            #     for i,c in enumerate(self.cells) if not c.is_empty()])
         return items_peeled_this_round > 0
     @property
     def decoded_weights(self) -> Dict[int, float]:
         return self._decoded_weights
     def is_fully_decoded(self) -> bool:
         return all(c.is_empty() for c in self.cells)
-    def scalar_mul_weight(self, scalar: float):
-        """Multiplies all cells by a scalar."""
-        for cell in self.cells:
-            cell.mul_scalar_weight(scalar)
     def remove(self, item: NNItem):
         raise NotImplementedError("RIBLT4NN is aggregation-only.")
     def __sub__(self, other: FilterBase):
