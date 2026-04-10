@@ -29,3 +29,4 @@ tests/test_iblt4nn.py
 tests/test_prv.py
 tests/test_riblt.py
 tests/test_riblt4nn.py
+tests/test_riblt_time.py

@@ -11,63 +11,12 @@ handling of floating-point arithmetic.
 
 from __future__ import annotations
 import math
-from collections import OrderedDict
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Type
 
 import galois
 
-from ..core.base import FilterItem, PeelableSymbol
-from ..core.prv import PRV
-
-# Bounded LRU caches attached to PRV instances to avoid repeated AES decrypt/encrypt
-# during peel (hot path: many cells × is_pure / to_item).
-_INDEX_CACHE_MAX = 8192
-_ENTRY_CACHE_MAX = 4096
-
-_CACHE_MISS = object()
-
-
-def _lru_get(cache: OrderedDict, key: int) -> Any:
-    if key not in cache:
-        return _CACHE_MISS
-    cache.move_to_end(key)
-    return cache[key]
-
-
-def _lru_set(cache: OrderedDict, key: int, value: Any, max_size: int) -> None:
-    if key in cache:
-        del cache[key]
-    cache[key] = value
-    while len(cache) > max_size:
-        cache.popitem(last=False)
-
-
-def _prv_index_cached(prv: PRV, k_int: int) -> Optional[int]:
-    caches = getattr(prv, "_nn_utils_caches", None)
-    if caches is None:
-        caches = {"index": OrderedDict(), "entry": OrderedDict()}
-        prv._nn_utils_caches = caches
-    idx_cache: OrderedDict = caches["index"]
-    hit = _lru_get(idx_cache, k_int)
-    if hit is not _CACHE_MISS:
-        return hit
-    res = prv.index(k_int)
-    _lru_set(idx_cache, k_int, res, _INDEX_CACHE_MAX)
-    return res
-
-
-def _prv_entry_cached(prv: PRV, i: int) -> "galois.FieldArray":
-    caches = getattr(prv, "_nn_utils_caches", None)
-    if caches is None:
-        caches = {"index": OrderedDict(), "entry": OrderedDict()}
-        prv._nn_utils_caches = caches
-    ent_cache: OrderedDict = caches["entry"]
-    hit = _lru_get(ent_cache, i)
-    if hit is not _CACHE_MISS:
-        return hit
-    e = prv.entry(i)
-    _lru_set(ent_cache, i, e, _ENTRY_CACHE_MAX)
-    return e
+from libFilter.core.base import FilterItem, PeelableSymbol
+from libFilter.core.prv import PRV
 
 # A small tolerance for floating point comparisons, used for proactive zeroing.
 # The default relative tolerance of math.isclose is 1e-9, which is a good choice.
@@ -106,46 +55,38 @@ class NNSymbol(PeelableSymbol):
     A cell for NN-filters, using finite field arithmetic for secure sums.
     Includes proactive zeroing for floating-point stability.
     """
-    __slots__ = ('GF', 'idx_code_sum', 'weight_sum', 'ndigits', '_scale')
+    __slots__ = ('GF', 'mask_sum', 'idx_code_sum', 'weight_sum')
 
     def __init__(
         self,
         GF: galois.FieldClass,
+        mask_sum: Any = 0,
         idx_code_sum: Any = 0,
-        weight_sum: int = 0,
-        ndigits: int = 6
+        weight_sum: float = 0.0
     ):
-        super().__init__(GF=GF, idx_code_sum=idx_code_sum, weight_sum=weight_sum, ndigits=ndigits)
+        super().__init__(GF=GF, mask_sum=mask_sum, idx_code_sum=idx_code_sum, weight_sum=weight_sum)
         self.GF = GF
+        self.mask_sum = GF(mask_sum)
         self.idx_code_sum = GF(idx_code_sum)
-        self.weight_sum = int(weight_sum)
-        self.ndigits = int(ndigits)
-        if self.ndigits < 0:
-            raise ValueError("ndigits must be non-negative.")
-        self._scale = 10 ** self.ndigits
+        self.weight_sum = weight_sum
 
     def _zero_if_close(self):
-        """Fixed-point mode keeps weight_sum as integer, no-op."""
-        return
-
-    def _weight_as_gf(self) -> "galois.FieldArray":
-        """
-        Convert signed fixed-point integer weight into a valid field element.
-        """
-        return self.GF(self.weight_sum % self.GF.order)
+        """If weight_sum is very close to zero, set it to exactly 0.0."""
+        if math.isclose(self.weight_sum, 0.0, abs_tol=ZERO_TOLERANCE):
+            self.weight_sum = 0.0
 
     def __iadd__(self, other: "NNSymbol") -> "NNSymbol":
-        if self.ndigits != other.ndigits:
-            raise ValueError("Cannot add symbols with different ndigits.")
+        self.mask_sum += other.mask_sum
         self.idx_code_sum += other.idx_code_sum
         self.weight_sum += other.weight_sum
+        self._zero_if_close()
         return self
 
     def __isub__(self, other: "NNSymbol") -> "NNSymbol":
-        if self.ndigits != other.ndigits:
-            raise ValueError("Cannot subtract symbols with different ndigits.")
+        self.mask_sum -= other.mask_sum
         self.idx_code_sum -= other.idx_code_sum
         self.weight_sum -= other.weight_sum
+        self._zero_if_close()
         return self
 
     def div_scalar(self, scalar: int) -> "NNSymbol":
@@ -154,14 +95,16 @@ class NNSymbol(PeelableSymbol):
         if scalar == 1:
             return self
 
+        self.mask_sum /= self.GF(scalar)
         self.idx_code_sum /= self.GF(scalar)
-        if self.weight_sum % scalar != 0:
-            raise ValueError("Fixed-point weight_sum cannot be divided evenly by scalar.")
-        self.weight_sum //= scalar
+        self.weight_sum /= scalar
+        # print("self.weight_sum",self.weight_sum)
+        self._zero_if_close()
         return self
 
     def mul_scalar_weight(self, scalar: int) -> "NNSymbol":
-        self.weight_sum = int(round(self.weight_sum * scalar))
+        self.weight_sum *= scalar
+        self._zero_if_close()
         return self
 
     def is_empty(self) -> bool:
@@ -169,45 +112,38 @@ class NNSymbol(PeelableSymbol):
         A symbol is empty if all its components are zero.
         With proactive zeroing, direct comparison is safe.
         """
-        return self.idx_code_sum == 0 and self.weight_sum == 0
+        return self.mask_sum == 0 and self.idx_code_sum == 0 and self.weight_sum == 0.0
 
     def is_pure(self, prv: PRV) -> bool:
         """
         Checks if the symbol is pure by verifying its contents against the PRV.
         """
-        if self.weight_sum == 0:
+        if self.mask_sum == 0:
             return False
-        # Empty XOR bucket: no code contribution.
-        if self.idx_code_sum == 0:
-            return False
-
-        potential_code = self.idx_code_sum / self._weight_as_gf()
-        k_int = int(potential_code)
-        # PRP domain check before decrypt (same as PRV.index, but cheaper than full index()).
-        if k_int < 0 or k_int >= prv.value_limit:
-            return False
-
-        decoded_idx = _prv_index_cached(prv, k_int)
+        
+        potential_code = self.idx_code_sum / self.mask_sum
+        
+        decoded_idx = prv.index(int(potential_code))
         if decoded_idx is None:
             return False
-
-        return potential_code == _prv_entry_cached(prv, decoded_idx)
+        
+        return potential_code == prv.entry(decoded_idx)
 
     def get_state(self) -> Dict[str, Any]:
         """Returns the serializable state of the symbol."""
         return {
+            'mask_sum': int(self.mask_sum),
             'idx_code_sum': int(self.idx_code_sum),
-            'weight_sum': self.weight_sum,
-            'ndigits': self.ndigits,
+            'weight_sum': self.weight_sum
         }
 
     def copy(self) -> "NNSymbol":
         """Returns a new NNSymbol instance with the same state."""
         return NNSymbol(
             GF=self.GF,
+            mask_sum=self.mask_sum,
             idx_code_sum=self.idx_code_sum,
-            weight_sum=self.weight_sum,
-            ndigits=self.ndigits,
+            weight_sum=self.weight_sum
         )
     
     @classmethod
@@ -216,36 +152,30 @@ class NNSymbol(PeelableSymbol):
         item: NNItem,
         *,
         prv: PRV,
-        ndigits: int = 6,
+        r: galois.FieldArray
     ) -> "NNSymbol":
-        """Creates a fixed-point symbol from an item."""
-        scale = 10 ** ndigits
-        fixed_weight = int(round(item.weight * scale))
-        if fixed_weight == 0:
-            raise ValueError(
-                f"Item weight {item.weight} becomes 0 after quantization; increase ndigits."
-            )
+        """Creates a symbol from an item, its PRV code, and a random mask `r`."""
         return cls(
             GF=prv.GF,
-            idx_code_sum=prv.entry(item.idx) * prv.GF(fixed_weight % prv.GF.order),
-            weight_sum=fixed_weight,
-            ndigits=ndigits,
+            mask_sum=r,
+            idx_code_sum=r * prv.entry(item.idx),
+            weight_sum=item.weight
         )
 
-    def to_item(self, prv: PRV) -> NNItem:
+    def to_item(self,prv: PRV) -> NNItem:
         """Decodes a pure symbol back into an NNItem."""
         if not self.is_pure(prv):
             raise ValueError("Cannot convert a non-pure symbol to an item.")
-
-        potential_code = self.idx_code_sum / self._weight_as_gf()
-        k_int = int(potential_code)
-        original_idx = _prv_index_cached(prv, k_int)
-
+            
+        potential_code = self.idx_code_sum / self.mask_sum
+        original_idx = prv.index(int(potential_code))
+        
         if original_idx is None:
             raise ValueError("Failed to decode a valid index from the symbol.")
+            
+        return NNItem(original_idx, self.weight_sum)
 
-        weight = round(self.weight_sum / self._scale, self.ndigits)
-        return NNItem(original_idx, weight)
+        # INSERT_YOUR_CODE
 
 class NNSymbol_unsec:
     """

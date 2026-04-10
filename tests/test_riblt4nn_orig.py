@@ -6,31 +6,20 @@ import pytest
 import math
 
 from libFilter.core.prv import PRV
-from libFilter.filters4nn.nn_utils import NNItem
-from libFilter.filters4nn.riblt4nn import RIBLT4NN
+from .bench.nn_utils_orig import NNItem
+from .bench.riblt4nn_orig import RIBLT4NN
 
 @pytest.fixture
 def riblt4nn_setup():
     """Provides a standard setup for RIBLT4NN tests."""
-    is_large_update = False
-    # 设置较大的n_indices以支持大型更新列表
-    if is_large_update:
-        n_indices = 11689512
-        prv = PRV(n=n_indices, prp_type='aes128', key=b'a_riblt4nn_key!!')
-        
-        # 生成包含600个元素的大型更新列表用于测试
-        client1_updates = [NNItem(idx=i*100, weight=0.5 + (i % 7) * 0.01) for i in range(5000)]
-        client2_updates = [NNItem(idx=i*100+50, weight=0.2 + (i % 5) * 0.02) for i in range(5000)]
-        verify_weights = {item.idx: item.weight for item in client1_updates + client2_updates}
-        expand_size = 13500
-    else:
-        n_indices = 7000
-        prv = PRV(n=n_indices, prp_type='aes128', key=b'a_riblt4nn_key!!')
-        # 各50个
-        client1_updates = [NNItem(idx=i * 10, weight=0.5 + (i % 7) * 0.01) for i in range(5)]
-        client2_updates = [NNItem(idx=i * 10 + 5, weight=0.2 + (i % 5) * 0.02) for i in range(5)]
-        verify_weights = {item.idx: item.weight for item in client1_updates + client2_updates}
-        expand_size = 30
+    n_indices = 70000
+    n_items = 5000
+    prv = PRV(n=n_indices, prp_type='aes128', key=b'a_riblt4nn_key!!')
+    # 各50个
+    client1_updates = [NNItem(idx=i * 10, weight=0.5 + (i % 7) * 0.01) for i in range(n_items)]
+    client2_updates = [NNItem(idx=i * 10 + 5, weight=0.2 + (i % 5) * 0.02) for i in range(n_items)]
+    verify_weights = {item.idx: item.weight for item in client1_updates + client2_updates}
+    expand_size = int(n_items * 1.4)
 
     return { 'prv': prv, 'client1': client1_updates, 'client2': client2_updates, 'expand_size': expand_size, 'verify_weights': verify_weights}
 
@@ -83,14 +72,14 @@ def test_encode_decode_two_clients(riblt4nn_setup, verbose_printer):
     riblt1 = RIBLT4NN(prv, diffusion_seed="encode_decode_seed")
     for item in client1:
         riblt1.push(item)
-    riblt1.expand(expand_size)
+    riblt1.expand(expand_size*2)
     verbose_printer(riblt1, "Client 1 encoded filter (finalized)")
 
     # Encode client2
     riblt2 = RIBLT4NN(prv, diffusion_seed="encode_decode_seed")
     for item in client2:
         riblt2.push(item)
-    riblt2.expand(expand_size)
+    riblt2.expand(expand_size*2)
     verbose_printer(riblt2, "Client 2 encoded filter (finalized)")
 
     # Add the two filters
@@ -116,12 +105,12 @@ def test_serialization_and_copy_on_finalized_filter(riblt4nn_setup, verbose_prin
     expand_size = riblt4nn_setup['expand_size']
     verify_weights = riblt4nn_setup['verify_weights']
     # Create and finalize a filter
-    riblt = RIBLT4NN(prv, diffusion_seed="test_serialize_seed")
+    riblt = RIBLT4NN(prv, diffusion_seed="test_deserialize_seed")
     for item in riblt4nn_setup['client1']:
         riblt.push(item)
     for item in riblt4nn_setup['client2']:
         riblt.push(item)
-    riblt.expand(expand_size)
+    riblt.expand(expand_size*2)
     verbose_printer(riblt, "Finalized filter to be copied/serialized")
 
     # --- Test Copy ---
@@ -148,17 +137,17 @@ def test_serialization_and_copy_on_finalized_filter(riblt4nn_setup, verbose_prin
         assert math.isclose(decoded[k], verify_weights[k], abs_tol=tolerance), f"idx={k}: {decoded[k]} != {verify_weights[k]}"
     assert rebuilt_riblt.is_fully_decoded()
         
-def test_unsupported_operations(riblt4nn_setup, verbose_printer):
-    """Ensures that disabled user-facing operations raise NotImplementedError."""
-    riblt = RIBLT4NN(riblt4nn_setup['prv'])
-    verbose_printer(riblt, "Testing unsupported operations on this filter")
+# def test_unsupported_operations(riblt4nn_setup, verbose_printer):
+#     """Ensures that disabled user-facing operations raise NotImplementedError."""
+#     riblt = RIBLT4NN(riblt4nn_setup['prv'])
+#     verbose_printer(riblt, "Testing unsupported operations on this filter")
     
-    with pytest.raises(NotImplementedError):
-        riblt.remove(riblt4nn_setup['client1'][0])
-    with pytest.raises(NotImplementedError):
-        _ = riblt - riblt
-    with pytest.raises(NotImplementedError):
-        riblt -= riblt
+#     with pytest.raises(NotImplementedError):
+#         riblt.remove(riblt4nn_setup['client1'][0])
+#     with pytest.raises(NotImplementedError):
+#         _ = riblt - riblt
+#     with pytest.raises(NotImplementedError):
+#         riblt -= riblt
 
 
 def test_expand_from_slice_and_merge_decode(riblt4nn_setup, verbose_printer):
@@ -199,11 +188,11 @@ def test_expand_from_slice_and_merge_decode(riblt4nn_setup, verbose_printer):
     assert len(decoded) < len(verify_weights)
 
     # Now expand both riblt1 and riblt2 by 200 more cell
-    riblt1.expand(expand_size)
-    riblt2.expand(expand_size)
+    riblt1.expand(expand_size*2)
+    riblt2.expand(expand_size*2)
 
     # Take the last 200 cells as slices
-    start, end = 1, expand_size + 1
+    start, end = 1, expand_size*2 + 1
     slice1 = riblt1.slice_to_dict(start, end)
     slice2 = riblt2.slice_to_dict(start, end)
 

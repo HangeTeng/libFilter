@@ -5,40 +5,40 @@ Implementation of a Rate-less, streaming IBLT for secure numerical aggregation.
 """
 
 from __future__ import annotations
-from typing import Dict, Any, Set, List
+import math
+from typing import Dict, Any, Set, List, Tuple
 
-from ..core.prv import PRV
-from ..core.base import FilterBase
-from ..core.utils import IndexGenerator
-from .nn_utils import NNItem, NNSymbol
-from ..filters.riblt import SymbolQueue as RIBLTSymbolQueue
+from libFilter.core.prv import PRV
+from libFilter.core.base import FilterBase
+from libFilter.core.utils import IndexGenerator, Hasher, _normalize_input
+from .nn_utils_orig import NNItem, NNSymbol
+from libFilter.filters.riblt import SymbolQueue as RIBLTSymbolQueue
 
 class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
     """
     A Rate-less, streaming IBLT for secure numerical aggregation.
     """
     __slots__ = (
-        'cells', '_symbol_queue', '_prv', '_diffusion_seed',
-        '_decoded_weights', '_peeled_indices', '_ndigits'
+        'cells', '_symbol_queue', '_prv', '_mask_hasher', '_diffusion_seed',
+        '_decoded_weights', '_peeled_indices'
     )
 
-    def __init__(
-        self,
-        prv: PRV,
-        diffusion_seed: Any = "default_diffusion_seed",
-        ndigits: int = 6,
-        *,
-        mask_seed: Any = None,
-    ):
+    def __init__(self, prv: PRV, mask_seed: Any = "default_mask_seed", diffusion_seed: Any = "default_diffusion_seed"):
         super().__init__()
         self._prv = prv
+        self._mask_hasher = Hasher(seed=mask_seed)
         self._diffusion_seed = diffusion_seed
-        self._ndigits = int(ndigits)
         self._symbol_queue = RIBLTSymbolQueue()
         self._decoded_weights: Dict[int, float] = {}
         self._peeled_indices: Set[int] = set()
-        # mask_seed kept only for backward compatibility with older call sites; unused.
 
+    def _get_mask_for_idx(self, idx: int) -> "galois.FieldArray":
+        nonce = 0
+        while True:
+            data_to_hash = _normalize_input(idx) + b'-' + _normalize_input(nonce)
+            r_int = self._mask_hasher.digest_int(data_to_hash, nbytes=self._prv.prp_bits//8)
+            if r_int != 0: return self._prv.GF(r_int)
+            nonce += 1
     def _get_generator_for_item(self, item_key: int) -> IndexGenerator:
         return IndexGenerator(key=item_key, seed=self._diffusion_seed)
 
@@ -49,12 +49,7 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         key_bytes = prv_config.get('key')
         if isinstance(key_bytes, list): key_bytes = bytes(key_bytes)
         prv = PRV(n=prv_config['n'], prp_type=prv_config['prp_type'], key=key_bytes)
-        instance = cls(
-            prv,
-            diffusion_seed=data['diffusion_seed'],
-            ndigits=data.get('ndigits', 6),
-            mask_seed=data.get('mask_seed'),
-        )
+        instance = cls(prv, data['mask_seed'], data['diffusion_seed'])
         GF = prv.GF
         instance.cells = [NNSymbol(GF, **s_data) for s_data in data['cells']]
         return instance
@@ -67,8 +62,8 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         return {
             'cells': [s.get_state() for s in self.cells],
             'prv': {'n': self._prv.n, 'prp_type': self._prv.prp_type, 'key': key_list},
+            'mask_seed': self._mask_hasher.seed,
             'diffusion_seed': self._diffusion_seed,
-            'ndigits': self._ndigits,
         }
 
     def copy(self) -> "RIBLT4NN":
@@ -78,16 +73,13 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         return self.from_dict(self.to_dict())
 
     def push(self, item: NNItem) -> None:
-        source_symbol = NNSymbol.from_item(
-            item,
-            prv=self._prv,
-            ndigits=self._ndigits,
-        )
+        r = self._get_mask_for_idx(item.idx)
+        source_symbol = NNSymbol.from_item(item, prv=self._prv, r=r)
         generator = self._get_generator_for_item(item.get_key())
         self._symbol_queue.enqueue_and_diffuse(source_symbol, generator, self.cells)
     def expand(self, n: int):
         if n <= 0: return
-        new_cells = [NNSymbol(self._prv.GF, ndigits=self._ndigits) for _ in range(n)]
+        new_cells = [NNSymbol(self._prv.GF) for _ in range(n)]
         self.cells.extend(new_cells)
         self._symbol_queue.expand_and_diffuse(self.cells)
 
@@ -96,8 +88,8 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         return {
             'cells': [s.get_state() for s in cells],
             'prv': {'n': self._prv.n, 'prp_type': self._prv.prp_type, 'key': list(self._prv.key) if self._prv.key else None},
+            'mask_seed': self._mask_hasher.seed,
             'diffusion_seed': self._diffusion_seed,
-            'ndigits': self._ndigits,
             'start': start,
             'end': end,
         } 
@@ -106,10 +98,10 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         expected_prv = {'n': self._prv.n, 'prp_type': self._prv.prp_type, 'key': list(self._prv.key) if self._prv.key else None}
         if params_dict['prv'] != expected_prv:
             raise ValueError("Cannot expand from a slice with a different PRV.")
+        if params_dict['mask_seed'] != self._mask_hasher.seed:
+            raise ValueError("Cannot expand from a slice with a different mask seed.")
         if params_dict['diffusion_seed'] != self._diffusion_seed:
             raise ValueError("Cannot expand from a slice with a different diffusion seed.")
-        if params_dict.get('ndigits', 6) != self._ndigits:
-            raise ValueError("Cannot expand from a slice with different ndigits.")
 
     # 从外部读入一个 cells 列表，并扩展到当前的 cells 列表
     def expand_from_slice(self, slice_dict: Dict[str, Any]):
@@ -119,10 +111,7 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         if slice_dict['start'] < 0 or slice_dict['end'] < 0 or slice_dict['start'] >= slice_dict['end']:
             raise ValueError("Invalid slice indices.")
         if slice_dict['end'] > len(self.cells):
-            self.cells.extend([
-                NNSymbol(self._prv.GF, ndigits=self._ndigits)
-                for _ in range(slice_dict['end'] - len(self.cells))
-            ])
+            self.cells.extend([NNSymbol(self._prv.GF) for _ in range(slice_dict['end'] - len(self.cells))])
         for i in range(slice_dict['start'], slice_dict['end']):
             self.cells[i] += NNSymbol(self._prv.GF, **slice_dict['cells'][i - slice_dict['start']])
         self._symbol_queue.expand_and_diffuse(self.cells)
@@ -151,6 +140,17 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
                     pure_indices.append(affected_idx)
         if not all(c.is_empty() for c in self.cells):
             print("Warning: IBLT4NN decoding may be incomplete.")
+            # print("Unpeeled cell",
+            #     [(
+            #         i, 
+            #         c.idx_code_sum == 0,
+            #         c.mask_sum == 0,
+            #         c.weight_sum == 0,
+            #         self._prv.index(c.idx_code_sum/c.mask_sum),
+            #         self._prv.index(c.idx_code_sum/c.mask_sum) in self._decoded_weights,
+            #         c.is_pure(self._prv)
+            #     ) 
+            #     for i,c in enumerate(self.cells) if not c.is_empty()])
         return items_peeled_this_round > 0
     @property
     def decoded_weights(self) -> Dict[int, float]:
