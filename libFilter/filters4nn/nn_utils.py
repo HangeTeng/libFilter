@@ -209,7 +209,15 @@ class NNSymbol(PeelableSymbol):
             weight_sum=self.weight_sum,
             ndigits=self.ndigits,
         )
-    
+
+    def negated(self) -> "NNSymbol":
+        return NNSymbol(
+            GF=self.GF,
+            idx_code_sum=-self.idx_code_sum,
+            weight_sum=-self.weight_sum,
+            ndigits=self.ndigits,
+        )
+
     @classmethod
     def from_item(
         cls: Type["NNSymbol"],

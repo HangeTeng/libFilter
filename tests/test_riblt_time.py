@@ -59,39 +59,51 @@ def _bench_one(FilterCls, *, prv: PRV, client1: List[NNItem], client2: List[NNIt
     }
 
 
-@pytest.mark.skipif(os.getenv("RUN_RIBLT_BENCH") != "1", reason="Set RUN_RIBLT_BENCH=1 to enable timing bench.")
+import statistics
+import collections
+
 def test_riblt_time_compare():
-    # Match the large-ish fixture pattern but keep it adjustable.
-    n_items = int(os.getenv("RIBLT_BENCH_ITEMS", "3000"))
-    expand_size = int(os.getenv("RIBLT_BENCH_EXPAND", "15000"))
-    repeat = int(os.getenv("RIBLT_BENCH_REPEAT", "1"))
-
-    prv = PRV(n=11689512, prp_type="aes128", key=b"a_riblt4nn_key!!")
-    client1, client2 = _build_updates(n_items)
-
-    # Warm-up to reduce first-run effects
-    # _bench_one(RIBLT4NN_ORIG, prv=prv, client1=client1, client2=client2, expand_size=expand_size, kwargs={"diffusion_seed": "bench"})
-    _bench_one(RIBLT4NN_OPT, prv=prv, client1=client1, client2=client2, expand_size=expand_size, kwargs={"diffusion_seed": "bench", "ndigits": 6})
-
-    orig_runs = [
-        _bench_one(RIBLT4NN_ORIG, prv=prv, client1=client1, client2=client2, expand_size=expand_size, kwargs={"diffusion_seed": "bench"})
-        for _ in range(repeat)
+    """
+    对比原始与优化RIBLT4NN实现的单进程性能基准。
+    """
+    size_settings = [
+        (500, 1500, 3),
+        (1000, 3000, 3),
+        (5000, 15000, 3),
+        (20000, 60000, 3),
     ]
-    opt_runs = [
-        _bench_one(RIBLT4NN_OPT, prv=prv, client1=client1, client2=client2, expand_size=expand_size, kwargs={"diffusion_seed": "bench", "ndigits": 6})
-        for _ in range(repeat)
-    ]
+    prv_config = {'n': 11689512, 'prp_type': "aes128", 'key': b"a_riblt4nn_key!!"}
 
-    def avg(key: str, runs: List[Dict[str, float]]) -> float:
-        return statistics.mean(r[key] for r in runs)
+    # 预生成全部数据
+    all_clients = {n: _build_updates(n) for n, _, _ in size_settings}
+
+    results = collections.defaultdict(lambda: {"orig": [], "opt": []})
+
+    for n_items, expand_size, repeat in size_settings:
+        client1, client2 = all_clients[n_items]
+        for _ in range(repeat):
+            # 原始
+            prv = PRV(**prv_config)
+            res = _bench_one(RIBLT4NN_ORIG, prv=prv, client1=client1, client2=client2,
+                             expand_size=expand_size, kwargs={"diffusion_seed": "bench"})
+            results[(n_items, expand_size)]["orig"].append(res)
+        for _ in range(repeat):
+            # 优化
+            prv = PRV(**prv_config)
+            res = _bench_one(RIBLT4NN_OPT, prv=prv, client1=client1, client2=client2,
+                             expand_size=expand_size, kwargs={"diffusion_seed": "bench", "ndigits": 6})
+            results[(n_items, expand_size)]["opt"].append(res)
 
     keys = ["push", "expand", "peel", "total"]
-    summary = {k: (avg(k, orig_runs), avg(k, opt_runs)) for k in keys}
 
-    print(f"\nRIBLT4NN timing compare (items={n_items*2}, expand={expand_size}, repeat={repeat})")
-    for k in keys:
-        t_orig, t_opt = summary[k]
-        speedup = (t_orig / t_opt) if t_opt > 0 else float("inf")
-        improvement = (t_orig - t_opt) / t_orig * 100 if t_orig > 0 else 0.0
-        print(f"  {k:>5}: orig={t_orig:.6f}s opt={t_opt:.6f}s  speedup={speedup:.2f}x  improvement={improvement:.1f}%")
-
+    print("\nRIBLT4NN 性能基准（单进程简化版）：")
+    for (n_items, expand_size), res_dict in results.items():
+        orig_runs = res_dict["orig"]
+        opt_runs = res_dict["opt"]
+        print(f"\nRIBLT4NN n_items={n_items}, expand={expand_size}, repeat={len(orig_runs)}:")
+        for k in keys:
+            t_orig = statistics.mean([r[k] for r in orig_runs]) if orig_runs else float("nan")
+            t_opt = statistics.mean([r[k] for r in opt_runs]) if opt_runs else float("nan")
+            speedup = (t_orig / t_opt) if t_opt > 0 else float("inf")
+            improvement = (t_orig - t_opt) / t_orig * 100 if t_orig > 0 else 0.0
+            print(f"  {k:>5}: orig={t_orig:.6f}s opt={t_opt:.6f}s  speedup={speedup:.2f}x  improvement={improvement:.1f}%")
