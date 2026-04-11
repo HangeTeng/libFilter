@@ -5,6 +5,7 @@ Implementation of a Rate-less, streaming IBLT for secure numerical aggregation.
 """
 
 from __future__ import annotations
+import copy
 import math
 from typing import Dict, Any, Set, List, Tuple
 
@@ -14,13 +15,14 @@ from libFilter.core.utils import IndexGenerator, Hasher, _normalize_input
 from .nn_utils_orig import NNItem, NNSymbol
 from libFilter.filters.riblt import SymbolQueue as RIBLTSymbolQueue
 
+
 class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
     """
     A Rate-less, streaming IBLT for secure numerical aggregation.
     """
     __slots__ = (
-        'cells', '_symbol_queue', '_prv', '_mask_hasher', '_diffusion_seed',
-        '_decoded_weights', '_peeled_indices'
+        'cells', '_symbol_queue', '_negative_symbol_queue', '_prv', '_mask_hasher',
+        '_diffusion_seed', '_decoded_weights', '_peeled_indices'
     )
 
     def __init__(self, prv: PRV, mask_seed: Any = "default_mask_seed", diffusion_seed: Any = "default_diffusion_seed"):
@@ -29,6 +31,7 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         self._mask_hasher = Hasher(seed=mask_seed)
         self._diffusion_seed = diffusion_seed
         self._symbol_queue = RIBLTSymbolQueue()
+        self._negative_symbol_queue = RIBLTSymbolQueue()
         self._decoded_weights: Dict[int, float] = {}
         self._peeled_indices: Set[int] = set()
 
@@ -77,11 +80,14 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         source_symbol = NNSymbol.from_item(item, prv=self._prv, r=r)
         generator = self._get_generator_for_item(item.get_key())
         self._symbol_queue.enqueue_and_diffuse(source_symbol, generator, self.cells)
-    def expand(self, n: int):
+        
+    def expand(self, n: int, *, apply_negative_queue: bool = True):
         if n <= 0: return
         new_cells = [NNSymbol(self._prv.GF) for _ in range(n)]
         self.cells.extend(new_cells)
         self._symbol_queue.expand_and_diffuse(self.cells)
+        if apply_negative_queue:
+            self._negative_symbol_queue.expand_and_diffuse(self.cells)
 
     def slice_to_dict(self, start: int, end: int):
         cells = self.cells[start:end]
@@ -104,7 +110,7 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
             raise ValueError("Cannot expand from a slice with a different diffusion seed.")
 
     # 从外部读入一个 cells 列表，并扩展到当前的 cells 列表
-    def expand_from_slice(self, slice_dict: Dict[str, Any]):
+    def expand_from_slice(self, slice_dict: Dict[str, Any], *, apply_negative_queue: bool = True):
         self._check_params_dict_compatibility(slice_dict)
         if len(slice_dict['cells']) <= 0: 
             raise ValueError("Cannot expand from an empty slice.")
@@ -114,6 +120,8 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
             self.cells.extend([NNSymbol(self._prv.GF) for _ in range(slice_dict['end'] - len(self.cells))])
         for i in range(slice_dict['start'], slice_dict['end']):
             self.cells[i] += NNSymbol(self._prv.GF, **slice_dict['cells'][i - slice_dict['start']])
+        if apply_negative_queue:
+            self._negative_symbol_queue.expand_and_diffuse(self.cells)
         self._symbol_queue.expand_and_diffuse(self.cells)
 
     def peel(self) -> bool:
@@ -138,6 +146,9 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
                 self.cells[affected_idx] -= symbol_to_peel
                 if self.cells[affected_idx].is_pure(self._prv):
                     pure_indices.append(affected_idx)
+            neg_gen = copy.deepcopy(peel_generator)
+            neg_sym = symbol_to_peel.negated()
+            self._negative_symbol_queue.enqueue_and_diffuse(neg_sym, neg_gen, self.cells)
         if not all(c.is_empty() for c in self.cells):
             print("Warning: IBLT4NN decoding may be incomplete.")
             # print("Unpeeled cell",

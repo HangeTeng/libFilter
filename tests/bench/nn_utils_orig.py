@@ -145,7 +145,16 @@ class NNSymbol(PeelableSymbol):
             idx_code_sum=self.idx_code_sum,
             weight_sum=self.weight_sum
         )
-    
+
+    def negated(self) -> "NNSymbol":
+        """Returns a new symbol with linear negation (−S), e.g. for negative symbol queues."""
+        return NNSymbol(
+            self.GF,
+            mask_sum=-self.mask_sum,
+            idx_code_sum=-self.idx_code_sum,
+            weight_sum=-self.weight_sum,
+        )
+
     @classmethod
     def from_item(
         cls: Type["NNSymbol"],
