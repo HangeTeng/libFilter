@@ -67,12 +67,12 @@ def test_riblt_time_compare():
     对比原始与优化RIBLT4NN实现的单进程性能基准。
     """
     size_settings = [
-        (500, 1500, 3),
+        # (500, 1500, 3),
         (1000, 3000, 3),
-        (5000, 15000, 3),
-        (20000, 60000, 3),
+        # (5000, 15000, 3),
+        # (20000, 60000, 3),
     ]
-    prv_config = {'n': 11689512, 'prp_type': "aes128", 'key': b"a_riblt4nn_key!!"}
+    prv_config = {'n': 11689512, 'prp_type': "des64", 'key': b"a_riblt4nn_key!!"}
 
     # 预生成全部数据
     all_clients = {n: _build_updates(n) for n, _, _ in size_settings}

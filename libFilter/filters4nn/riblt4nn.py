@@ -130,17 +130,20 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
             self._negative_symbol_queue.expand_and_diffuse(self.cells)
         self._symbol_queue.expand_and_diffuse(self.cells)
 
-    def peel(self) -> bool:
+    def peel(self, start_idx: int = 0) -> bool:
         items_peeled_this_round = 0
         cells = self.cells
         prv = self._prv
         decoded_weights = self._decoded_weights
         peeled_indices = self._peeled_indices
         n_cells = len(cells)
+        start = max(0, int(start_idx))
+        if start >= n_cells:
+            return False
 
         pure_indices = []
         queued = set()
-        for i in range(n_cells):
+        for i in range(start, n_cells):
             if i in peeled_indices:
                 continue
             if cells[i].is_pure(prv):
@@ -160,11 +163,15 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
             decoded_weights[item.idx] = item.weight
             peeled_indices.add(idx)
             peel_generator = self._get_generator_for_item(item.get_key())
+            impacted_indices = set()
             while peel_generator.curr < n_cells:
                 affected_idx = peel_generator.curr
                 peel_generator.jump()
                 cells[affected_idx] -= symbol_to_peel
-                if affected_idx not in queued and cells[affected_idx].is_pure(prv):
+                if affected_idx not in queued:
+                    impacted_indices.add(affected_idx)
+            for affected_idx in impacted_indices:
+                if cells[affected_idx].is_pure(prv):
                     pure_indices.append(affected_idx)
                     queued.add(affected_idx)
             neg_sym = symbol_to_peel.negated()
