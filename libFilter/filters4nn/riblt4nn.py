@@ -6,7 +6,6 @@ Implementation of a Rate-less, streaming IBLT for secure numerical aggregation.
 
 from __future__ import annotations
 from typing import Dict, Any, Set, List
-import copy
 
 from ..core.prv import PRV
 from ..core.base import FilterBase
@@ -133,32 +132,44 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
 
     def peel(self) -> bool:
         items_peeled_this_round = 0
-        pure_indices = [
-            i for i in range(len(self.cells))
-            if i not in self._peeled_indices and self.cells[i].is_pure(self._prv)
-        ]
+        cells = self.cells
+        prv = self._prv
+        decoded_weights = self._decoded_weights
+        peeled_indices = self._peeled_indices
+        n_cells = len(cells)
+
+        pure_indices = []
+        queued = set()
+        for i in range(n_cells):
+            if i in peeled_indices:
+                continue
+            if cells[i].is_pure(prv):
+                pure_indices.append(i)
+                queued.add(i)
         while pure_indices:
             idx = pure_indices.pop()
-            cell = self.cells[idx]
-            if not cell.is_pure(self._prv): continue
+            queued.discard(idx)
+            cell = cells[idx]
+            if not cell.is_pure(prv):
+                continue
             symbol_to_peel = cell.copy()
-            item = symbol_to_peel.to_item(self._prv)
-            if item.idx in self._decoded_weights: continue
+            item = symbol_to_peel.to_item(prv)
+            if item.idx in decoded_weights:
+                continue
             items_peeled_this_round += 1
-            self._decoded_weights[item.idx] = item.weight
+            decoded_weights[item.idx] = item.weight
+            peeled_indices.add(idx)
             peel_generator = self._get_generator_for_item(item.get_key())
-            while peel_generator.curr < len(self.cells):
+            while peel_generator.curr < n_cells:
                 affected_idx = peel_generator.curr
                 peel_generator.jump()
-                self.cells[affected_idx] -= symbol_to_peel
-                if self.cells[affected_idx].is_pure(self._prv):
+                cells[affected_idx] -= symbol_to_peel
+                if affected_idx not in queued and cells[affected_idx].is_pure(prv):
                     pure_indices.append(affected_idx)
-            neg_gen = copy.deepcopy(peel_generator)
+                    queued.add(affected_idx)
             neg_sym = symbol_to_peel.negated()
-            self._negative_symbol_queue.enqueue_and_diffuse(neg_sym, neg_gen, self.cells)
-        if not all(c.is_empty() for c in self.cells):
-            # print("Warning: IBLT4NN decoding may be incomplete.")
-            pass
+            # peel_generator is no longer used below; reusing it avoids deepcopy cost.
+            self._negative_symbol_queue.enqueue_and_diffuse(neg_sym, peel_generator, cells)
         return items_peeled_this_round > 0
 
     @property
