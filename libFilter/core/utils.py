@@ -262,8 +262,8 @@ class IndexGenerator:
         # The factor is now simply derived from 1/sqrt(r).
         # The scale of the increment can be tuned by an optional constant `C` if needed.
         # Here we assume C=1.
-        # factor = (1.0 / math.sqrt(r)) - 1.0
-        factor = (1.0 / r) - 1.0
+        factor = (1.0 / math.sqrt(r)) - 1.0
+        # factor = (1.0 / r) - 1.0
         
         increment = math.ceil((float(self.curr) + 1.5) * factor)
         
