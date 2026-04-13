@@ -104,6 +104,7 @@ class NNItem(FilterItem):
 class NNSymbol(PeelableSymbol):
     """
     A cell for NN-filters, using finite field arithmetic for secure sums.
+    Both idx_code_sum and weight_sum are stored in GF domain (finite field).
     Includes proactive zeroing for floating-point stability.
     """
     __slots__ = ('GF', 'idx_code_sum', 'weight_sum', 'ndigits', '_scale')
@@ -112,27 +113,21 @@ class NNSymbol(PeelableSymbol):
         self,
         GF: galois.FieldClass,
         idx_code_sum: Any = 0,
-        weight_sum: int = 0,
+        weight_sum: Any = 0,
         ndigits: int = 6
     ):
         super().__init__(GF=GF, idx_code_sum=idx_code_sum, weight_sum=weight_sum, ndigits=ndigits)
         self.GF = GF
         self.idx_code_sum = GF(idx_code_sum)
-        self.weight_sum = int(weight_sum)
+        self.weight_sum = GF(weight_sum)
         self.ndigits = int(ndigits)
         if self.ndigits < 0:
             raise ValueError("ndigits must be non-negative.")
         self._scale = 10 ** self.ndigits
 
     def _zero_if_close(self):
-        """Fixed-point mode keeps weight_sum as integer, no-op."""
+        """Fixed-point mode keeps weight_sum as GF element, no-op."""
         return
-
-    def _weight_as_gf(self) -> "galois.FieldArray":
-        """
-        Convert signed fixed-point integer weight into a valid field element.
-        """
-        return self.GF(self.weight_sum % self.GF.order)
 
     def __iadd__(self, other: "NNSymbol") -> "NNSymbol":
         if self.ndigits != other.ndigits:
@@ -153,15 +148,14 @@ class NNSymbol(PeelableSymbol):
             raise ZeroDivisionError("Cannot divide by zero in the field.")
         if scalar == 1:
             return self
-
-        self.idx_code_sum /= self.GF(scalar)
-        if self.weight_sum % scalar != 0:
-            raise ValueError("Fixed-point weight_sum cannot be divided evenly by scalar.")
-        self.weight_sum //= scalar
+        inv_scalar = self.GF(1) / self.GF(scalar)
+        self.idx_code_sum *= inv_scalar
+        self.weight_sum *= inv_scalar
         return self
 
     def mul_scalar_weight(self, scalar: int) -> "NNSymbol":
-        self.weight_sum = int(round(self.weight_sum * scalar))
+        s = self.GF(scalar)
+        self.weight_sum *= s
         return self
 
     def is_empty(self) -> bool:
@@ -181,7 +175,7 @@ class NNSymbol(PeelableSymbol):
         if self.idx_code_sum == 0:
             return False
 
-        potential_code = self.idx_code_sum / self._weight_as_gf()
+        potential_code = self.idx_code_sum / self.weight_sum
         k_int = int(potential_code)
         # PRP domain check before decrypt (same as PRV.index, but cheaper than full index()).
         if k_int < 0 or k_int >= prv.value_limit:
@@ -197,7 +191,7 @@ class NNSymbol(PeelableSymbol):
         """Returns the serializable state of the symbol."""
         return {
             'idx_code_sum': int(self.idx_code_sum),
-            'weight_sum': self.weight_sum,
+            'weight_sum': int(self.weight_sum),
             'ndigits': self.ndigits,
         }
 
@@ -230,13 +224,15 @@ class NNSymbol(PeelableSymbol):
         scale = 10 ** ndigits
         fixed_weight = int(round(item.weight * scale))
         if fixed_weight == 0:
-            raise ValueError(
-                f"Item weight {item.weight} becomes 0 after quantization; increase ndigits."
+            import warnings
+            warnings.warn(
+                f"Item weight {item.weight} becomes 0 after quantization; insertion has no effect."
             )
+        weight_gf = prv.GF(fixed_weight % prv.GF.order)
         return cls(
             GF=prv.GF,
-            idx_code_sum=prv.entry(item.idx) * prv.GF(fixed_weight % prv.GF.order),
-            weight_sum=fixed_weight,
+            idx_code_sum=prv.entry(item.idx) * weight_gf,
+            weight_sum=weight_gf,
             ndigits=ndigits,
         )
 
@@ -245,14 +241,21 @@ class NNSymbol(PeelableSymbol):
         if not self.is_pure(prv):
             raise ValueError("Cannot convert a non-pure symbol to an item.")
 
-        potential_code = self.idx_code_sum / self._weight_as_gf()
+        potential_code = self.idx_code_sum / self.weight_sum
         k_int = int(potential_code)
         original_idx = _prv_index_cached(prv, k_int)
 
         if original_idx is None:
             raise ValueError("Failed to decode a valid index from the symbol.")
 
-        weight = round(self.weight_sum / self._scale, self.ndigits)
+        # Recover fixed_weight from field element weight_sum (may be negative mod order)
+        # Interpret as Python int, map to signed int32/64, then scale down.
+        # Use the same logic as entry->weight_sum (compatible with quantization above).
+        weight_int = int(self.weight_sum)
+        order = self.GF.order
+        if weight_int > order // 2:
+            weight_int = weight_int - order
+        weight = round(weight_int / self._scale, self.ndigits)
         return NNItem(original_idx, weight)
 
 class NNSymbol_unsec:

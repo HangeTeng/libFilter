@@ -28,8 +28,7 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         prv: PRV,
         diffusion_seed: Any = "default_diffusion_seed",
         ndigits: int = 6,
-        *,
-        mask_seed: Any = None,
+        # mask_seed parameter removed as mask is not needed anymore
     ):
         super().__init__()
         self._prv = prv
@@ -39,7 +38,6 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         self._negative_symbol_queue = RIBLTSymbolQueue()
         self._decoded_weights: Dict[int, float] = {}
         self._peeled_indices: Set[int] = set()
-        # mask_seed kept only for backward compatibility with older call sites; unused.
 
     def _get_generator_for_item(self, item_key: int) -> IndexGenerator:
         return IndexGenerator(key=item_key, seed=self._diffusion_seed)
@@ -55,7 +53,6 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
             prv,
             diffusion_seed=data['diffusion_seed'],
             ndigits=data.get('ndigits', 6),
-            mask_seed=data.get('mask_seed'),
         )
         GF = prv.GF
         instance.cells = [NNSymbol(GF, **s_data) for s_data in data['cells']]
@@ -160,7 +157,8 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
             neg_sym = symbol_to_peel.negated()
             self._negative_symbol_queue.enqueue_and_diffuse(neg_sym, neg_gen, self.cells)
         if not all(c.is_empty() for c in self.cells):
-            print("Warning: IBLT4NN decoding may be incomplete.")
+            # print("Warning: IBLT4NN decoding may be incomplete.")
+            pass
         return items_peeled_this_round > 0
 
     @property
