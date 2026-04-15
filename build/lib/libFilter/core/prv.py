@@ -15,6 +15,10 @@ from typing import Dict, Any, Optional
 import galois
 from Crypto.Cipher import AES, DES
 
+# TODO:
+# 可以考虑引入 ffex 库，实现格式保持加密（Format-Preserving Encryption, FPE），
+# 以支持可变比特数的加密映射，例如将 48 位映射到 48 位，或 40 位映射到 40 位等场景。
+
 class PRV:
     """
     A Pseudo-Random Vector that maps indices to finite field elements.
@@ -41,14 +45,14 @@ class PRV:
         }
     }
 
-    def __init__(self, n: int, prp_type: str = 'aes128', key: Optional[bytes] = None):
+    def __init__(self, n: int, prp_type: str = 'aes128', key: Optional[Any] = None):
         """
         Initializes the Pseudo-Random Vector.
 
         Args:
             n: The virtual length of the vector.
             prp_type: The PRP preset type ('aes128' or 'des64').
-            key: A custom cryptographic key. If None, a deterministic key is
+            key: A custom cryptographic key (bytes or str). If None, a deterministic key is
                  generated from a fixed seed.
         """
         config_key = prp_type.lower()
@@ -66,11 +70,19 @@ class PRV:
         self.p = (1 << self.prp_bits) + config['p_offset']
         
         if key is not None:
-            if len(key) != key_size:
-                raise ValueError(
-                    f"'{prp_type}' requires a {key_size}-byte key, but {len(key)} bytes were provided."
-                )
-            self.key = key
+            # Accept str or bytes for key, convert to bytes if needed
+            if isinstance(key, str):
+                key_bytes = key.encode()
+            elif isinstance(key, bytes):
+                key_bytes = key
+            else:
+                raise TypeError(f"Key must be bytes or str, got {type(key)}")
+            # Truncate or pad the key to the required key_size
+            if len(key_bytes) < key_size:
+                key_bytes = key_bytes.ljust(key_size, b'\0')
+            elif len(key_bytes) > key_size:
+                key_bytes = key_bytes[:key_size]
+            self.key = key_bytes
         else:
             # Generate a deterministic key from the seed if none is provided.
             self.key = hashlib.sha256(config['seed'].encode()).digest()[:key_size]
@@ -81,6 +93,7 @@ class PRV:
         # Initialize the cipher in ECB mode, which acts as a PRP.
         self._cipher = config['cipher'].new(self.key, config['cipher'].MODE_ECB)
         self.GF = galois.GF(self.p)
+        # print(self.GF)
 
     def entry(self, i: int) -> galois.FieldArray:
         """Gets the field element at index `i`."""

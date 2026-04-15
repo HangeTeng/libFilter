@@ -231,252 +231,252 @@ class HashMapping:
         return f"HashMapping(k={len(self.hashers)}, m={self.table_size})"
 
 
-# class IndexGenerator:
-#     """
-#     Generates a fountain-code-like index sequence for RIBLT.
-    
-#     This generator produces a deterministic, monotonically increasing sequence
-#     of indices for a given key. The distribution of indices is inspired by
-#     the formula in the original RIBLT paper to ensure good decoding properties.
-#     """
-#     __slots__ = ('_prng', 'curr', '_key', '_seed')
-
-#     def __init__(self, key: InputType, seed: InputType):
-#         """
-#         Initializes the IndexGenerator.
-
-#         Args:
-#             key: The key for which to generate the index sequence.
-#             seed: A seed to make the sequence deterministic and unique.
-#         """
-#         self._key, self._seed = key, seed
-#         # The sequence is determined by a PRNG seeded from the key and a global seed.
-#         self._prng = Hasher(seed).create_prng(key)
-#         self.curr = 0
-
-#     def jump(self) -> None:
-#         """Calculates and advances to the next index in the sequence."""
-#         # Get a random float in (0, 1] to avoid division by zero.
-#         r = 1.0 - self._prng.random() # Maps to (0.0, 1.0]
-        
-#         # The factor is now simply derived from 1/sqrt(r).
-#         # The scale of the increment can be tuned by an optional constant `C` if needed.
-#         # Here we assume C=1.
-#         factor = (1.0 / math.sqrt(r)) - 1.0
-#         # factor = (1.0 / r) - 1.0
-        
-#         increment = math.ceil((float(self.curr) + 1.5) * factor)
-#         # increment = math.ceil(((float(self.curr) + 1.5)**1.5) * factor)
-#         # print(f"increment: {increment}")
-#         # The robust increment is still a good idea.
-#         self.curr += max(1, int(increment))
-
-#     def __repr__(self) -> str:
-#         return f"IndexGenerator(key={self._key!r}, seed={self._seed!r})"
-
-
-
 class IndexGenerator:
     """
-    Generates a deterministic, monotonically increasing index sequence for RIBLT
-    using a log-bin oscillating shaping function.
-
-    Core profile:
-        rho(i) = c_k / (1 + alpha * i),  for B_k <= i < B_{k+1}
-
-    where:
-        c_k = 1 + eps_k * u_k
-
-    - u_k controls the oscillation template
-    - eps_k controls the decay of oscillation amplitude
-
-    Supported oscillation templates:
-        - "binary_alt"
-        - "smooth4"
-        - "sinusoidal"
-
-    Supported decay modes:
-        - "geometric": eps_k = eps * (eps_decay ** k)
-        - "power":     eps_k = eps / ((1 + k) ** tau)
-
-    Bin boundaries:
-        B_k = bin_base^k - 1
+    Generates a fountain-code-like index sequence for RIBLT.
+    
+    This generator produces a deterministic, monotonically increasing sequence
+    of indices for a given key. The distribution of indices is inspired by
+    the formula in the original RIBLT paper to ensure good decoding properties.
     """
+    __slots__ = ('_prng', 'curr', '_key', '_seed')
 
-    __slots__ = (
-        "_prng",
-        "_key",
-        "_seed",
-        "curr",
-        "alpha",
-        "eps",
-        "template",
-        "decay_mode",
-        "bin_base",
-        "period",
-        "phase",
-        "eps_decay",
-        "tau",
-    )
+    def __init__(self, key: InputType, seed: InputType):
+        """
+        Initializes the IndexGenerator.
 
-    def __init__(
-        self,
-        key: InputType,
-        seed: InputType,
-        *,
-        alpha: float = 0.5,
-        eps: float = 0.99,
-        template: str = "sinusoidal",      # "binary_alt" | "smooth4" | "sinusoidal"
-        decay_mode: str = "geometric",     # "geometric" | "power"
-        bin_base: float = 2.0,
-        period: int = 8,
-        phase: float = 0.0,
-        eps_decay: float = 0.99,           # for geometric decay
-        tau: float = 0.5,                  # for power decay
-    ):
-        if alpha <= 0.0:
-            raise ValueError("alpha must be > 0")
-        if not (0.0 <= eps < 1.0):
-            raise ValueError("eps must satisfy 0 <= eps < 1")
-        if template not in {"binary_alt", "smooth4", "sinusoidal"}:
-            raise ValueError("template must be one of: binary_alt, smooth4, sinusoidal")
-        if decay_mode not in {"geometric", "power"}:
-            raise ValueError("decay_mode must be one of: geometric, power")
-        if bin_base <= 1.0:
-            raise ValueError("bin_base must be > 1")
-        if period <= 0:
-            raise ValueError("period must be > 0")
-        if not (0.0 < eps_decay <= 1.0):
-            raise ValueError("eps_decay must satisfy 0 < eps_decay <= 1")
-        if tau < 0.0:
-            raise ValueError("tau must be >= 0")
-
+        Args:
+            key: The key for which to generate the index sequence.
+            seed: A seed to make the sequence deterministic and unique.
+        """
         self._key, self._seed = key, seed
+        # The sequence is determined by a PRNG seeded from the key and a global seed.
         self._prng = Hasher(seed).create_prng(key)
-
         self.curr = 0
 
-        self.alpha = float(alpha)
-        self.eps = float(eps)
-        self.template = template
-        self.decay_mode = decay_mode
-        self.bin_base = float(bin_base)
-        self.period = int(period)
-        self.phase = float(phase)
-        self.eps_decay = float(eps_decay)
-        self.tau = float(tau)
-
-    # ---------------------------
-    # Bin utilities
-    # ---------------------------
-
-    def _bin_index(self, i: int) -> int:
-        """
-        Find k such that B_k <= i < B_{k+1}, where B_k = bin_base^k - 1.
-        """
-        if i <= 0:
-            return 0
-        return int(math.floor(math.log(i + 1.0, self.bin_base)))
-
-    def _bin_right_boundary(self, k: int) -> int:
-        """
-        Returns the first index NOT in bin k:
-            B_{k+1} = bin_base^(k+1) - 1
-        """
-        return int(math.floor(self.bin_base ** (k + 1) - 1.0))
-
-    # ---------------------------
-    # Oscillation amplitude decay
-    # ---------------------------
-
-    def _eps_k(self, k: int) -> float:
-        if self.decay_mode == "geometric":
-            return self.eps * (self.eps_decay ** k)
-        # power
-        return self.eps / ((1.0 + k) ** self.tau)
-
-    # ---------------------------
-    # Oscillation templates
-    # ---------------------------
-
-    def _u_k(self, k: int) -> float:
-        """
-        Returns u_k in [-1, 1].
-        """
-        if self.template == "binary_alt":
-            return 1.0 if (k % 2 == 0) else -1.0
-
-        if self.template == "smooth4":
-            # cycle: [ +1, 0, -1, 0 ]
-            m = k % 4
-            if m == 0:
-                return 1.0
-            if m == 1:
-                return 0.0
-            if m == 2:
-                return -1.0
-            return 0.0
-
-        # sinusoidal
-        return math.sin((2.0 * math.pi * k / self.period) + self.phase)
-
-    def _coeff(self, k: int) -> float:
-        """
-        c_k = 1 + eps_k * u_k
-        """
-        c = 1.0 + self._eps_k(k) * self._u_k(k)
-
-        # numerical safety: keep c positive
-        if c <= 1e-12:
-            c = 1e-12
-        return c
-
-    # ---------------------------
-    # Jump sampling
-    # ---------------------------
-
-    def _sample_gap_in_bin(self, i: int, c: float) -> int:
-        """
-        Approximate jump formula within a single bin:
-            G ≈ ceil( ((1 + alpha*i)/alpha) * ((1-r)^(-alpha/c) - 1) )
-        """
-        s = 1.0 - self._prng.random()   # in (0, 1]
-        exponent = -self.alpha / c
-        factor = (s ** exponent) - 1.0
-        gap = math.ceil(((1.0 + self.alpha * float(i)) / self.alpha) * factor)
-        return max(1, int(gap))
-
     def jump(self) -> None:
-        """
-        Advance to the next index.
-
-        If a sampled jump crosses the current log-bin boundary, we move to the
-        boundary and resample under the next bin's coefficient.
-        """
-        i = self.curr
-
-        while True:
-            k = self._bin_index(i)
-            right = self._bin_right_boundary(k)
-            c = self._coeff(k)
-
-            gap = self._sample_gap_in_bin(i, c)
-            nxt = i + gap
-
-            if nxt < right:
-                self.curr = nxt
-                return
-
-            i = right
+        """Calculates and advances to the next index in the sequence."""
+        # Get a random float in (0, 1] to avoid division by zero.
+        r = 1.0 - self._prng.random() # Maps to (0.0, 1.0]
+        
+        # The factor is now simply derived from 1/sqrt(r).
+        # The scale of the increment can be tuned by an optional constant `C` if needed.
+        # Here we assume C=1.
+        factor = (1.0 / math.sqrt(r)) - 1.0
+        # factor = (1.0 / r) - 1.0
+        
+        increment = math.ceil((float(self.curr) + 1.5) * factor)
+        # increment = math.ceil(((float(self.curr) + 1.5)**1.5) * factor)
+        # print(f"increment: {increment}")
+        # The robust increment is still a good idea.
+        self.curr += max(1, int(increment))
 
     def __repr__(self) -> str:
-        return (
-            f"IndexGenerator(key={self._key!r}, seed={self._seed!r}, "
-            f"alpha={self.alpha}, eps={self.eps}, template={self.template!r}, "
-            f"decay_mode={self.decay_mode!r}, bin_base={self.bin_base}, "
-            f"period={self.period}, phase={self.phase}, "
-            f"eps_decay={self.eps_decay}, tau={self.tau})"
-        )
+        return f"IndexGenerator(key={self._key!r}, seed={self._seed!r})"
+
+
+
+# class IndexGenerator:
+#     """
+#     Generates a deterministic, monotonically increasing index sequence for RIBLT
+#     using a log-bin oscillating shaping function.
+
+#     Core profile:
+#         rho(i) = c_k / (1 + alpha * i),  for B_k <= i < B_{k+1}
+
+#     where:
+#         c_k = 1 + eps_k * u_k
+
+#     - u_k controls the oscillation template
+#     - eps_k controls the decay of oscillation amplitude
+
+#     Supported oscillation templates:
+#         - "binary_alt"
+#         - "smooth4"
+#         - "sinusoidal"
+
+#     Supported decay modes:
+#         - "geometric": eps_k = eps * (eps_decay ** k)
+#         - "power":     eps_k = eps / ((1 + k) ** tau)
+
+#     Bin boundaries:
+#         B_k = bin_base^k - 1
+#     """
+
+#     __slots__ = (
+#         "_prng",
+#         "_key",
+#         "_seed",
+#         "curr",
+#         "alpha",
+#         "eps",
+#         "template",
+#         "decay_mode",
+#         "bin_base",
+#         "period",
+#         "phase",
+#         "eps_decay",
+#         "tau",
+#     )
+
+#     def __init__(
+#         self,
+#         key: InputType,
+#         seed: InputType,
+#         *,
+#         alpha: float = 0.4,
+#         eps: float = 0.99,
+#         template: str = "binary_alt",      # "binary_alt" | "smooth4" | "sinusoidal"
+#         decay_mode: str = "geometric",     # "geometric" | "power"
+#         bin_base: float = 2.0,
+#         period: int = 8,
+#         phase: float = 0.0,
+#         eps_decay: float = 1.,           # for geometric decay
+#         tau: float = 0.5,                  # for power decay
+#     ):
+#         if alpha <= 0.0:
+#             raise ValueError("alpha must be > 0")
+#         if not (0.0 <= eps < 1.0):
+#             raise ValueError("eps must satisfy 0 <= eps < 1")
+#         if template not in {"binary_alt", "smooth4", "sinusoidal"}:
+#             raise ValueError("template must be one of: binary_alt, smooth4, sinusoidal")
+#         if decay_mode not in {"geometric", "power"}:
+#             raise ValueError("decay_mode must be one of: geometric, power")
+#         if bin_base <= 1.0:
+#             raise ValueError("bin_base must be > 1")
+#         if period <= 0:
+#             raise ValueError("period must be > 0")
+#         if not (0.0 < eps_decay <= 1.0):
+#             raise ValueError("eps_decay must satisfy 0 < eps_decay <= 1")
+#         if tau < 0.0:
+#             raise ValueError("tau must be >= 0")
+
+#         self._key, self._seed = key, seed
+#         self._prng = Hasher(seed).create_prng(key)
+
+#         self.curr = 0
+
+#         self.alpha = float(alpha)
+#         self.eps = float(eps)
+#         self.template = template
+#         self.decay_mode = decay_mode
+#         self.bin_base = float(bin_base)
+#         self.period = int(period)
+#         self.phase = float(phase)
+#         self.eps_decay = float(eps_decay)
+#         self.tau = float(tau)
+
+#     # ---------------------------
+#     # Bin utilities
+#     # ---------------------------
+
+#     def _bin_index(self, i: int) -> int:
+#         """
+#         Find k such that B_k <= i < B_{k+1}, where B_k = bin_base^k - 1.
+#         """
+#         if i <= 0:
+#             return 0
+#         return int(math.floor(math.log(i + 1.0, self.bin_base)))
+
+#     def _bin_right_boundary(self, k: int) -> int:
+#         """
+#         Returns the first index NOT in bin k:
+#             B_{k+1} = bin_base^(k+1) - 1
+#         """
+#         return int(math.floor(self.bin_base ** (k + 1) - 1.0))
+
+#     # ---------------------------
+#     # Oscillation amplitude decay
+#     # ---------------------------
+
+#     def _eps_k(self, k: int) -> float:
+#         if self.decay_mode == "geometric":
+#             return self.eps * (self.eps_decay ** k)
+#         # power
+#         return self.eps / ((1.0 + k) ** self.tau)
+
+#     # ---------------------------
+#     # Oscillation templates
+#     # ---------------------------
+
+#     def _u_k(self, k: int) -> float:
+#         """
+#         Returns u_k in [-1, 1].
+#         """
+#         if self.template == "binary_alt":
+#             return 1.0 if (k % 2 == 0) else -1.0
+
+#         if self.template == "smooth4":
+#             # cycle: [ +1, 0, -1, 0 ]
+#             m = k % 4
+#             if m == 0:
+#                 return 1.0
+#             if m == 1:
+#                 return 0.0
+#             if m == 2:
+#                 return -1.0
+#             return 0.0
+
+#         # sinusoidal
+#         return math.sin((2.0 * math.pi * k / self.period) + self.phase)
+
+#     def _coeff(self, k: int) -> float:
+#         """
+#         c_k = 1 + eps_k * u_k
+#         """
+#         c = 1.0 + self._eps_k(k) * self._u_k(k)
+
+#         # numerical safety: keep c positive
+#         if c <= 1e-12:
+#             c = 1e-12
+#         return c
+
+#     # ---------------------------
+#     # Jump sampling
+#     # ---------------------------
+
+#     def _sample_gap_in_bin(self, i: int, c: float) -> int:
+#         """
+#         Approximate jump formula within a single bin:
+#             G ≈ ceil( ((1 + alpha*i)/alpha) * ((1-r)^(-alpha/c) - 1) )
+#         """
+#         s = 1.0 - self._prng.random()   # in (0, 1]
+#         exponent = -self.alpha / c
+#         factor = (s ** exponent) - 1.0
+#         gap = math.ceil(((1.0 + self.alpha * float(i)) / self.alpha) * factor)
+#         return max(1, int(gap))
+
+#     def jump(self) -> None:
+#         """
+#         Advance to the next index.
+
+#         If a sampled jump crosses the current log-bin boundary, we move to the
+#         boundary and resample under the next bin's coefficient.
+#         """
+#         i = self.curr
+
+#         while True:
+#             k = self._bin_index(i)
+#             right = self._bin_right_boundary(k)
+#             c = self._coeff(k)
+
+#             gap = self._sample_gap_in_bin(i, c)
+#             nxt = i + gap
+
+#             if nxt < right:
+#                 self.curr = nxt
+#                 return
+
+#             i = right
+
+#     def __repr__(self) -> str:
+#         return (
+#             f"IndexGenerator(key={self._key!r}, seed={self._seed!r}, "
+#             f"alpha={self.alpha}, eps={self.eps}, template={self.template!r}, "
+#             f"decay_mode={self.decay_mode!r}, bin_base={self.bin_base}, "
+#             f"period={self.period}, phase={self.phase}, "
+#             f"eps_decay={self.eps_decay}, tau={self.tau})"
+#         )
 
 
 # --- Data Serialization Helpers ---
