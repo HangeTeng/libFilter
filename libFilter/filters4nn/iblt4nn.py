@@ -5,12 +5,11 @@ Implementation of an IBLT for Neural Network (NN) gradient aggregation.
 """
 
 from __future__ import annotations
-from locale import delocalize
 from typing import Dict, Any, Type
 
 from ..core.prv import PRV
 from ..core.base import StandardFilter, FilterBase
-from ..core.utils import Hasher, HashMapping, _normalize_input
+from ..core.utils import HashMapping
 from .nn_utils import NNItem, NNSymbol
 
 class IBLT4NN(StandardFilter[NNSymbol, NNItem]):
@@ -21,37 +20,20 @@ class IBLT4NN(StandardFilter[NNSymbol, NNItem]):
     """
     symbol_type = NNSymbol
 
-    def __init__(self, hash_mapping: HashMapping, prv: PRV, mask_seed: Any = "default_mask_seed"):
+    def __init__(
+        self,
+        hash_mapping: HashMapping,
+        prv: PRV,
+        mask_seed: Any = "default_mask_seed",
+        ndigits: int = 6,
+    ):
         self.prv = prv
-        self._mask_hasher = Hasher(seed=mask_seed)
-        
+        # Keep mask_seed in signature for backward compatibility with old callsites.
+        self._ndigits = int(ndigits)
         self.hash_mapping = hash_mapping
         self.m = hash_mapping.table_size
         self.k = len(hash_mapping.hashers)
-        self.cells = [self.symbol_type(self.prv.GF) for _ in range(self.m)]
-
-    def _get_mask_for_idx(self, idx: int) -> "galois.FieldArray":
-        """
-        Generates a non-zero, deterministic, pseudo-random mask for an index.
-        It robustly handles the case where a hash might be zero by using a
-        nonce to find the first non-zero hash output.
-        """
-        nonce = 0
-        while True:
-            # Combine the original index with a changing nonce.
-            # Normalizing ensures consistent byte representation for the index.
-            data_to_hash = _normalize_input(idx) + b'-' + _normalize_input(nonce)
-            
-            # Use the hasher to get a deterministic integer from the combined data.
-            # This approach is simpler and correct.
-            r_int = self._mask_hasher.digest_int(data_to_hash, nbytes=self.prv.prp_bits//8)
-
-            # If we found a non-zero value, we are done.
-            if r_int != 0:
-                return self.prv.GF(r_int)
-            
-            # Otherwise, increment the nonce and try again.
-            nonce += 1
+        self.cells = [self.symbol_type(self.prv.GF, ndigits=self._ndigits) for _ in range(self.m)]
 
     @classmethod
     def from_dict(cls: Type["IBLT4NN"], data: Dict[str, Any]) -> "IBLT4NN":
@@ -65,7 +47,12 @@ class IBLT4NN(StandardFilter[NNSymbol, NNItem]):
              
         prv = PRV(n=prv_config['n'], prp_type=prv_config['prp_type'], key=key_bytes)
         
-        instance = cls(hash_mapping, prv, data.get('mask_seed'))
+        instance = cls(
+            hash_mapping,
+            prv,
+            data.get('mask_seed'),
+            ndigits=data.get('ndigits', 6),
+        )
         
         GF = prv.GF
         instance.cells = [cls.symbol_type(GF, **s_data) for s_data in data['cells']]
@@ -79,13 +66,16 @@ class IBLT4NN(StandardFilter[NNSymbol, NNItem]):
             'hash_mapping': self.hash_mapping.get_config(),
             'cells': [s.get_state() for s in self.cells],
             'prv': {'n': self.prv.n, 'prp_type': self.prv.prp_type, 'key': key_list},
-            'mask_seed': self._mask_hasher.seed
+            'ndigits': self._ndigits,
         }
 
     def push(self, item: NNItem) -> None:
         """Adds an item's contribution to the filter."""
-        r = self._get_mask_for_idx(item.idx)
-        source_symbol = self.symbol_type.from_item(item, prv=self.prv, r=r)
+        source_symbol = self.symbol_type.from_item(
+            item,
+            prv=self.prv,
+            ndigits=self._ndigits,
+        )
         
         for index in self._get_indices(item.get_key()):
             self.cells[index] += source_symbol

@@ -40,7 +40,7 @@ class PRV:
             'bits': 64,
             'key_size': 8,
             'cipher': DES,
-            'p_offset': 13, # For GF(2^64 + 13)
+            'p_offset': -59, # For GF(2^64 + 13)
             'seed': "prv-des64-default-seed"
         }
     }
