@@ -1,6 +1,6 @@
 # tests/test_iblt.py
 
-"""IBLT4NN（神经网络用IBLT）的测试。"""
+"""Tests for IBLT4NN (an IBLT for neural-network aggregation)."""
 
 import pytest
 import math
@@ -12,7 +12,7 @@ from libFilter.filters4nn.nn_utils import NNItem
 
 @pytest.fixture
 def nn_setup():
-    """为IBLT4NN测试提供标准设置。"""
+    """Provides a standard setup for IBLT4NN tests."""
     n_indices = 2048
     hash_map = HashMapping.from_seeds(['NNS1', 'NNS2', 'NNS3'], table_size=50)
     prv = PRV(n=n_indices, prp_type='aes128')
@@ -26,7 +26,7 @@ def nn_setup():
     }
 
 def test_aggregation_and_peel(nn_setup):
-    """测试IBLT聚合和剥离(peel)功能。"""
+    """Tests IBLT aggregation and peeling (decode) behavior."""
     map_config, prv = nn_setup['hash_map'], nn_setup['prv']
     client1, client2 = nn_setup['client1'], nn_setup['client2']
 
@@ -36,7 +36,7 @@ def test_aggregation_and_peel(nn_setup):
     for item in client2:
         iblt.push(item)
 
-    # 非破坏性peel
+    # Non-destructive peel
     decoded = iblt.peel(destructive=False)
     expected = {10: 0.7, 100: 0.3, 1024: -0.1}
     assert len(decoded) == len(expected)
@@ -44,13 +44,13 @@ def test_aggregation_and_peel(nn_setup):
         assert idx in decoded
         assert math.isclose(decoded[idx], weight)
 
-    # 破坏性peel后应为空
+    # After destructive peel, the filter should be empty
     iblt2 = iblt.copy()
     iblt2.peel(destructive=True)
     assert iblt2.is_fully_decoded()
 
 def test_merge_and_peel(nn_setup):
-    """测试IBLT的合并与peel。"""
+    """Tests IBLT merge and peel."""
     map_config, prv = nn_setup['hash_map'], nn_setup['prv']
     client1, client2 = nn_setup['client1'], nn_setup['client2']
 
@@ -69,13 +69,13 @@ def test_merge_and_peel(nn_setup):
         assert idx in decoded
         assert math.isclose(decoded[idx], weight)
 
-    # += 操作
+    # In-place add operation (+=)
     iblt1_copy = iblt1.copy()
     iblt1_copy += iblt2
     assert iblt1_copy.to_dict() == merged.to_dict()
 
 def test_serialization(nn_setup):
-    """测试IBLT的序列化和反序列化。"""
+    """Tests IBLT serialization and deserialization."""
     map_config, prv = nn_setup['hash_map'], nn_setup['prv']
     iblt = IBLT4NN(map_config, prv)
     for item in nn_setup['client1']:
@@ -86,7 +86,7 @@ def test_serialization(nn_setup):
     assert rebuilt.peel() == iblt.peel()
 
 def test_unsupported_operations(nn_setup):
-    """测试不支持的操作会抛出NotImplementedError。"""
+    """Tests that unsupported operations raise NotImplementedError."""
     iblt = IBLT4NN(nn_setup['hash_map'], nn_setup['prv'])
     with pytest.raises(NotImplementedError, match="does not support `remove`"):
         iblt.remove(nn_setup['client1'][0])

@@ -13,12 +13,12 @@ from libFilter.filters4nn.riblt4nn import RIBLT4NN
 def riblt4nn_setup():
     """Provides a standard setup for RIBLT4NN tests."""
     is_large_update = False
-    # 设置较大的n_indices以支持大型更新列表
+    # Use a larger n_indices to support large update lists
     if is_large_update:
         n_indices = 11689512
         prv = PRV(n=n_indices, prp_type='aes128', key=b'a_riblt4nn_key!!')
         
-        # 生成包含600个元素的大型更新列表用于测试
+        # Generate a large update list for testing
         client1_updates = [NNItem(idx=i*100, weight=0.5 + (i % 7) * 0.01) for i in range(5000)]
         client2_updates = [NNItem(idx=i*100+50, weight=0.2 + (i % 5) * 0.02) for i in range(5000)]
         verify_weights = {item.idx: item.weight for item in client1_updates + client2_updates}
@@ -26,7 +26,7 @@ def riblt4nn_setup():
     else:
         n_indices = 7000
         prv = PRV(n=n_indices, prp_type='aes128', key=b'a_riblt4nn_key!!')
-        # 各50个
+        # 50 items each
         client1_updates = [NNItem(idx=i * 10, weight=0.5 + (i % 7) * 0.01) for i in range(5)]
         client2_updates = [NNItem(idx=i * 10 + 5, weight=0.2 + (i % 5) * 0.02) for i in range(5)]
         verify_weights = {item.idx: item.weight for item in client1_updates + client2_updates}
@@ -218,7 +218,7 @@ def test_expand_from_slice_and_merge_decode(riblt4nn_setup, verbose_printer):
         verbose_printer(agg_riblt, f"State after peel round {peel_round}")
         peel_round += 1
     decoded = agg_riblt.decoded_weights
-    # 使用容差比较 decoded 和 verify_weights 的数值相等性
+    # Use a tolerance to compare decoded values with verify_weights
     assert set(decoded.keys()) == set(verify_weights.keys())
     tolerance = 1e-6
     for k in decoded:

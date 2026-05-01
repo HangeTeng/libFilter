@@ -64,7 +64,8 @@ import collections
 
 def test_riblt_time_compare():
     """
-    对比原始与优化RIBLT4NN实现的单进程性能基准。
+    Single-process performance benchmark comparing the original vs. optimized
+    RIBLT4NN implementations.
     """
     size_settings = [
         # (500, 1500, 3),
@@ -74,7 +75,7 @@ def test_riblt_time_compare():
     ]
     prv_config = {'n': 11689512, 'prp_type': "des64", 'key': b"a_riblt4nn_key!!"}
 
-    # 预生成全部数据
+    # Pre-generate all data
     all_clients = {n: _build_updates(n) for n, _, _ in size_settings}
 
     results = collections.defaultdict(lambda: {"orig": [], "opt": []})
@@ -82,13 +83,13 @@ def test_riblt_time_compare():
     for n_items, expand_size, repeat in size_settings:
         client1, client2 = all_clients[n_items]
         for _ in range(repeat):
-            # 原始
+            # Original
             prv = PRV(**prv_config)
             res = _bench_one(RIBLT4NN_ORIG, prv=prv, client1=client1, client2=client2,
                              expand_size=expand_size, kwargs={"diffusion_seed": "bench"})
             results[(n_items, expand_size)]["orig"].append(res)
         for _ in range(repeat):
-            # 优化
+            # Optimized
             prv = PRV(**prv_config)
             res = _bench_one(RIBLT4NN_OPT, prv=prv, client1=client1, client2=client2,
                              expand_size=expand_size, kwargs={"diffusion_seed": "bench", "ndigits": 6})
@@ -96,7 +97,7 @@ def test_riblt_time_compare():
 
     keys = ["push", "expand", "peel", "total"]
 
-    print("\nRIBLT4NN 性能基准（单进程简化版）：")
+    print("\nRIBLT4NN benchmark (single-process, simplified):")
     for (n_items, expand_size), res_dict in results.items():
         orig_runs = res_dict["orig"]
         opt_runs = res_dict["opt"]

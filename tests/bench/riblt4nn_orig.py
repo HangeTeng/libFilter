@@ -109,7 +109,7 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         if params_dict['diffusion_seed'] != self._diffusion_seed:
             raise ValueError("Cannot expand from a slice with a different diffusion seed.")
 
-    # 从外部读入一个 cells 列表，并扩展到当前的 cells 列表
+    # Read a `cells` list from an external slice and expand into the current `cells`.
     def expand_from_slice(self, slice_dict: Dict[str, Any], *, apply_negative_queue: bool = True):
         self._check_params_dict_compatibility(slice_dict)
         if len(slice_dict['cells']) <= 0: 

@@ -1,21 +1,22 @@
 ﻿"""
 Demo: RIBLT4NN expand/peel demo for decoding flow.
 
-此脚本演示：
-- riblt1/riblt2 各自push元素，并expand一部分
-- 用 slice_to_dict 截取各自的区间（slice不是直接能有的，需要按(start,end)取cells）
-- agg 空riblt使用 expand_from_slice 吸收slice数据
-- peel：第一次解码因为expand不够，无法全部解码
-- riblt1/riblt2 再次expand，重复slice和expand_from_slice
-- peel：能够解码更多项
-- 最终若全部expand，应该能解码全部
+This script demonstrates:
+- riblt1/riblt2 each push items and expand partially
+- use slice_to_dict to extract each range (a slice is represented by (start, end) on cells)
+- an empty agg riblt absorbs slice data via expand_from_slice
+- peel: the first decode cannot fully decode because expand is insufficient
+- riblt1/riblt2 expand again, repeat slice and expand_from_slice
+- peel: more items can be decoded
+- eventually, with enough expand, all items should decode
 
-调试 bench 失败用例时，下面常量与 test_riblt4nn_expand_ratio.py 中对应 trial 一致：
+When debugging failing bench cases, the constants below should match the
+corresponding trial in test_riblt4nn_expand_ratio.py:
   n_items=1000 trial=4/8 -> trial_idx=3
   seed=bench_1000_3_335239e27fb4e91e
-  expand_step=max(1,n_items//2)=500, max_ratio=4.0, key/PRV/_build_updates 同 bench
+  expand_step=max(1,n_items//2)=500, max_ratio=4.0, key/PRV/_build_updates match the bench
 
-运行方法:
+Run:
     pytest -s tests/bench/test_riblt_demo.py
 """
 
@@ -26,22 +27,23 @@ from libFilter.core.prv import PRV
 
 
 def test_riblt4nn_expand_and_peel_demo():
-    # 与 test_riblt4nn_expand_ratio 中 FAIL 案例对齐：n_items=2000, trial=8/8, trial_idx=7, seed来自打印
+    # Align with the FAIL case in test_riblt4nn_expand_ratio: n_items=2000, trial=8/8,
+    # trial_idx=7, seed comes from the printed output.
     n_items = 5000
-    trial_idx_for_seed = 7  # trial=8/8 (从0开始)
+    trial_idx_for_seed = 7  # trial=8/8 (0-based)
     diffusion_seed = "bench_5000_7_9516722b81eb7ea3"
     assert diffusion_seed == f"bench_{n_items}_{trial_idx_for_seed}_9516722b81eb7ea3"
 
-    expand_chunk = max(1, n_items)  # 1000，与 bench expand_step 一致
+    expand_chunk = max(1, n_items)  # 1000, matches bench expand_step
     max_ratio = 2.0
-    max_expand_budget = int(n_items * 2 * max_ratio)  # 与 bench 单路 expand 上限一致
+    max_expand_budget = int(n_items * 2 * max_ratio)  # Matches the bench per-stream expand cap
 
     n_indices = max(70000, n_items * 20 + 100)
     prf_key = b"a_riblt4nn_key!!"
 
     client1, client2, verify_weights = _build_updates(n_items)
 
-    # 两个各自 push 数据
+    # Each side pushes its own data
     prv = PRV(n=n_indices, prp_type="aes128", key=prf_key)
     riblt1 = RIBLT4NN(prv, diffusion_seed=diffusion_seed)
     riblt2 = RIBLT4NN(prv, diffusion_seed=diffusion_seed)
@@ -57,25 +59,25 @@ def test_riblt4nn_expand_and_peel_demo():
     )
     print("Initial push done.")
 
-    expanded_round = 0  # 每轮 riblt1/riblt2 各 expand expand_chunk，计一轮
+    expanded_round = 0  # Each round expands riblt1/riblt2 by expand_chunk
 
-    # 各自expand
+    # Expand each side
     riblt1.expand(expand_chunk)
     riblt2.expand(expand_chunk)
     expanded_round += expand_chunk
     print(f"riblt1, riblt2 expanded to {len(riblt1.cells)} cells (expanded_round={expanded_round}).")
 
-    # 用slice_to_dict方式，取出[0, 当前expand)的cells
+    # Using slice_to_dict, take cells in [0, current_expand)
     slice1 = riblt1.slice_to_dict(0, len(riblt1.cells))
     slice2 = riblt2.slice_to_dict(0, len(riblt2.cells))
 
-    # agg为全新空riblt
+    # agg is a brand-new empty riblt
     agg = RIBLT4NN(prv, diffusion_seed=diffusion_seed)
     agg.expand_from_slice(slice1)
     agg.expand_from_slice(slice2)
     print(f"agg.expand_from_slice: now {len(agg.cells)} cells.")
 
-    # peel，第一次应该不能全部decode
+    # Peel; the first attempt should not fully decode
     decoded = agg.peel()
     decoded_count = len(getattr(agg, "decoded_weights", {}))
     print(
@@ -85,7 +87,7 @@ def test_riblt4nn_expand_and_peel_demo():
     if not agg.is_fully_decoded():
         print("Not fully decoded after first peel.")
 
-    # 再expand一次
+    # Expand again
     while not agg.is_fully_decoded():
         if expanded_round >= max_expand_budget:
             print(
@@ -105,7 +107,7 @@ def test_riblt4nn_expand_and_peel_demo():
             f"(expanded_round={expanded_round})."
         )
 
-        # 追加expand部分到agg (只slice新增部分, 避免重复)
+        # Append the newly expanded portion into agg (slice only the new part to avoid duplication)
         slice1_next = riblt1.slice_to_dict(next_start, len(riblt1.cells))
         slice2_next = riblt2.slice_to_dict(next_start, len(riblt2.cells))
         agg.expand_from_slice(slice1_next)
@@ -121,7 +123,7 @@ def test_riblt4nn_expand_and_peel_demo():
         if not decoded_any:
             print("DEBUG: This peel did not decode any new items. agg state for debug:")
             from pprint import pprint
-            # 只print非空cell状态 (NNSymbol)
+            # Print only non-empty cell states (NNSymbol)
             if hasattr(agg, "cells"):
                 non_empty_cells = [cell for cell in agg.cells[:10] if not getattr(cell, "is_empty", lambda: False)()]
                 if non_empty_cells:
@@ -132,7 +134,7 @@ def test_riblt4nn_expand_and_peel_demo():
                 if agg.undecoded_indices:
                     print("agg.undecoded count:", len(agg.undecoded_indices))
                     print("agg.undecoded indices sample:", list(agg.undecoded_indices)[:10])
-                    # 只打印非空undecoded的symbol状态
+                    # Print only non-empty undecoded symbol states
                     undecoded_states = []
                     for idx in list(agg.undecoded_indices)[:3]:
                         sym = agg.undecoded.get(idx, None)
@@ -149,7 +151,7 @@ def test_riblt4nn_expand_and_peel_demo():
        
  
 
-        # 检查已解码项的正确性
+        # Validate decoded items
         decoded_keys = set(getattr(agg, "decoded_weights", {}))
         for idx in decoded_keys:
             expect = verify_weights[idx]

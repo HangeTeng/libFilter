@@ -128,7 +128,7 @@ class IBLT4NN(StandardFilter[NNSymbol, NNItem]):
                     
         if not all(c.is_empty() for c in decoder.cells):
             print("Warning: IBLT4NN decoding may be incomplete.")
-            # # 只保留前后 5 个未剥离 cell 的索引，并补充总数量
+            # # Keep only the first/last 5 unpeeled cell indices, and include the total count.
             # unpeeled_indices = [i for i, c in enumerate(decoder.cells) if not c.is_empty()]
             # n = len(unpeeled_indices)
             # if n > 10:

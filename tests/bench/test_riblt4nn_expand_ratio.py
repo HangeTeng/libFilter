@@ -162,7 +162,7 @@ def _run_single_and_separate_trial(args):
     )
 
 def test_riblt4nn_decode_expand_ratio_experiment():
-    # 参数请直接在这里修改，不要用环境变量
+    # Adjust parameters directly here; do not use environment variables.
     n_items_list = [5, 10, 50, 100, 250, 500, 1000, 1500, 2000, 3000, 4000, 5000]
     trials = 8
     max_ratio = 2.0
@@ -175,11 +175,11 @@ def test_riblt4nn_decode_expand_ratio_experiment():
         f"base_seed={base_seed}"
     )
 
-    # 设置并行worker数，None表示自动根据CPU核心数选择
+    # Configure the number of parallel workers; None selects automatically based on CPU cores.
     max_workers = None
 
     for n_items in n_items_list:
-        # 设置expand_step为n_items的一半，至少为1保证有效
+        # Set expand_step to a fraction of n_items; at least 1 to keep it valid.
         expand_step = max(1, n_items // 8)
         expand_single: List[int] = []
         expand_separate: List[int] = []
@@ -192,7 +192,7 @@ def test_riblt4nn_decode_expand_ratio_experiment():
             (
                 n_items,
                 trial_idx,
-                rng.getrandbits(64),  # 保证每个trial的种子唯一且并行安全
+                rng.getrandbits(64),  # Ensure each trial's seed is unique and parallel-safe
                 expand_step,
                 max_ratio
             )
@@ -218,7 +218,7 @@ def test_riblt4nn_decode_expand_ratio_experiment():
 
                 trial_results[trial_idx] = (diffusion_seed, single_expand, separate_expand)
 
-        # 按trial顺序打印和统计
+        # Print and aggregate stats in trial order
         for trial_idx, (diffusion_seed, single_expand, separate_expand) in enumerate(trial_results):
             if single_expand is None:
                 fail_single += 1

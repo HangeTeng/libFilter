@@ -12,7 +12,7 @@ authors = [
 ]
 description = "An advanced library of probabilistic data structures and filters, including IBLT, RIBLT, and variants for secure aggregation."
 readme = "README.md"
-license = { file="LICENSE" } # 假设你有一个 MIT 许可证文件
+license = { file="LICENSE" } # Assumes you have an MIT license file
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Python :: 3",

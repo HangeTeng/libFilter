@@ -15,7 +15,7 @@ def riblt4nn_setup():
     n_indices = 70000
     n_items = 5000
     prv = PRV(n=n_indices, prp_type='aes128', key=b'a_riblt4nn_key!!')
-    # 各50个
+    # 50 items each
     client1_updates = [NNItem(idx=i * 10, weight=0.5 + (i % 7) * 0.01) for i in range(n_items)]
     client2_updates = [NNItem(idx=i * 10 + 5, weight=0.2 + (i % 5) * 0.02) for i in range(n_items)]
     verify_weights = {item.idx: item.weight for item in client1_updates + client2_updates}
@@ -207,7 +207,7 @@ def test_expand_from_slice_and_merge_decode(riblt4nn_setup, verbose_printer):
         verbose_printer(agg_riblt, f"State after peel round {peel_round}")
         peel_round += 1
     decoded = agg_riblt.decoded_weights
-    # 使用容差比较 decoded 和 verify_weights 的数值相等性
+    # Use a tolerance to compare decoded values with verify_weights
     assert set(decoded.keys()) == set(verify_weights.keys())
     tolerance = 1e-6
     for k in decoded:

@@ -16,8 +16,8 @@ import galois
 from Crypto.Cipher import AES, DES
 
 # TODO:
-# 可以考虑引入 ffex 库，实现格式保持加密（Format-Preserving Encryption, FPE），
-# 以支持可变比特数的加密映射，例如将 48 位映射到 48 位，或 40 位映射到 40 位等场景。
+# Consider introducing the `ffex` library to implement Format-Preserving Encryption (FPE),
+# enabling same-bit-width encryption mappings (e.g., 48-bit to 48-bit, 40-bit to 40-bit, etc.).
 
 class PRV:
     """
