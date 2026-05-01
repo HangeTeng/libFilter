@@ -36,7 +36,9 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         self._symbol_queue = RIBLTSymbolQueue()
         self._negative_symbol_queue = RIBLTSymbolQueue()
         self._decoded_weights: Dict[int, float] = {}
-        self._peeled_indices: Set[int] = set()
+        # Hot path: use a bytearray bitset instead of a Python set.
+        # 0 = not peeled, 1 = peeled
+        self._peeled_indices = bytearray()
 
     def _get_generator_for_item(self, item_key: int) -> IndexGenerator:
         return IndexGenerator(key=item_key, seed=self._diffusion_seed)
@@ -141,17 +143,20 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
         if start >= n_cells:
             return False
 
-        pure_indices = []
-        queued = set()
+        if len(peeled_indices) < n_cells:
+            peeled_indices.extend(b"\x00" * (n_cells - len(peeled_indices)))
+
+        pure_indices: List[int] = []
+        queued = bytearray(n_cells)
         for i in range(start, n_cells):
-            if i in peeled_indices:
+            if peeled_indices[i]:
                 continue
             if cells[i].is_pure(prv):
                 pure_indices.append(i)
-                queued.add(i)
+                queued[i] = 1
         while pure_indices:
             idx = pure_indices.pop()
-            queued.discard(idx)
+            queued[idx] = 0
             cell = cells[idx]
             if not cell.is_pure(prv):
                 continue
@@ -161,19 +166,15 @@ class RIBLT4NN(FilterBase[NNSymbol, NNItem]):
                 continue
             items_peeled_this_round += 1
             decoded_weights[item.idx] = item.weight
-            peeled_indices.add(idx)
+            peeled_indices[idx] = 1
             peel_generator = self._get_generator_for_item(item.get_key())
-            impacted_indices = set()
             while peel_generator.curr < n_cells:
                 affected_idx = peel_generator.curr
                 peel_generator.jump()
                 cells[affected_idx] -= symbol_to_peel
-                if affected_idx not in queued:
-                    impacted_indices.add(affected_idx)
-            for affected_idx in impacted_indices:
-                if cells[affected_idx].is_pure(prv):
+                if not queued[affected_idx] and not peeled_indices[affected_idx] and cells[affected_idx].is_pure(prv):
                     pure_indices.append(affected_idx)
-                    queued.add(affected_idx)
+                    queued[affected_idx] = 1
             neg_sym = symbol_to_peel.negated()
             # peel_generator is no longer used below; reusing it avoids deepcopy cost.
             self._negative_symbol_queue.enqueue_and_diffuse(neg_sym, peel_generator, cells)

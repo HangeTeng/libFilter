@@ -250,22 +250,28 @@ class IndexGenerator:
             seed: A seed to make the sequence deterministic and unique.
         """
         self._key, self._seed = key, seed
-        # The sequence is determined by a PRNG seeded from the key and a global seed.
-        self._prng = Hasher(seed).create_prng(key)
+
+        # The sequence is determined by a PRNG seeded from (seed, key).
+        #
+        # NOTE: This is a hot path during peel. Using Python's random.Random here
+        # is significantly slower than a small integer PRNG.
+        self._prng = _SplitMix64(Hasher(seed).digest_int(key, nbytes=8))
         self.curr = 0
 
     def jump(self) -> None:
         """Calculates and advances to the next index in the sequence."""
         # Get a random float in (0, 1] to avoid division by zero.
-        r = 1.0 - self._prng.random() # Maps to (0.0, 1.0]
+        r = 1.0 - self._prng.random()  # Maps to (0.0, 1.0]
         
         # The factor is now simply derived from 1/sqrt(r).
         # The scale of the increment can be tuned by an optional constant `C` if needed.
         # Here we assume C=1.
-        factor = (1.0 / math.sqrt(r)) - 1.0
+        sqrt = math.sqrt
+        ceil = math.ceil
+        factor = (1.0 / sqrt(r)) - 1.0
         # factor = (1.0 / r) - 1.0
         
-        increment = math.ceil((float(self.curr) + 1.5) * factor)
+        increment = ceil((float(self.curr) + 1.5) * factor)
         # increment = math.ceil(((float(self.curr) + 1.5)**1.5) * factor)
         # print(f"increment: {increment}")
         # The robust increment is still a good idea.
@@ -273,6 +279,34 @@ class IndexGenerator:
 
     def __repr__(self) -> str:
         return f"IndexGenerator(key={self._key!r}, seed={self._seed!r})"
+
+
+class _SplitMix64:
+    """
+    A tiny non-cryptographic 64-bit PRNG for hot paths.
+
+    SplitMix64 is fast and has good statistical properties for simulation.
+    """
+
+    __slots__ = ("_state",)
+
+    def __init__(self, seed: int):
+        self._state = int(seed) & 0xFFFFFFFFFFFFFFFF
+
+    def next_u64(self) -> int:
+        z = (self._state + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+        self._state = z
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9 & 0xFFFFFFFFFFFFFFFF
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EB & 0xFFFFFFFFFFFFFFFF
+        return (z ^ (z >> 31)) & 0xFFFFFFFFFFFFFFFF
+
+    def random(self) -> float:
+        """
+        Return a float in [0.0, 1.0).
+
+        Uses the top 53 bits to match double precision mantissa behavior.
+        """
+        return float(self.next_u64() >> 11) * (1.0 / (1 << 53))
 
 
 
