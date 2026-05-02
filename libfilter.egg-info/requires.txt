@@ -1,5 +1,0 @@
-galois
-pycryptodome
-
-[test]
-pytest
