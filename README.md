@@ -1,19 +1,14 @@
 <p align="center">
-  <!-- You can place a project logo or title image here -->
-  <!-- e.g., <img src="path/to/your/logo.png" alt="libFilter Logo" width="400"/> -->
   <h1 align="center">libFilter</h1>
 </p>
 
-<!-- Add a build status badge from GitHub Actions here -->
-<!-- ![Build Status](https://github.com/your-username/libFilter/actions/workflows/build-test.yml/badge.svg) -->
-
-A fast, portable, and modern Python 3 library for advanced probabilistic data structures. The primary design goal of this library is to provide high-quality implementations of both classic and cutting-edge filters, while maintaining a **clean, extensible, and easy-to-use** API.
+A portable, and modern Python 3 library for advanced probabilistic data structures. The primary design goal of this library is to provide high-quality implementations of both classic and cutting-edge filters, while maintaining a **clean, extensible, and easy-to-use** API.
 
 **Basic Filters (Set Membership & Difference):**
 *   **Bloom Filter (BF)**: The classic space-efficient probabilistic data structure for set membership testing.
 *   **Counting Bloom Filter (CBF)**: An extension of the Bloom Filter that supports element deletions.
-*   **Invertible Bloom Lookup Table (IBLT)** [[GKMMS2011]](https://dl.acm.org/doi/10.1145/2043164.2018449): A powerful data structure that can efficiently recover the symmetric difference between two sets.
-*   **Robust IBLT (RIBLT)** [[GMR2011]](https://ieeexplore.ieee.org/document/6197501): A robust version of IBLT based on rate-less coding principles, making it insensitive to parameters and enabling streaming data processing.
+*   **Invertible Bloom Lookup Table (IBLT)**: A powerful data structure that can efficiently recover the symmetric difference between two sets.
+*   **Robust IBLT (RIBLT)**: A robust version of IBLT based on rate-less coding principles, making it insensitive to parameters and enabling streaming data processing.
 
 **Filters for Secure Aggregation (Privacy-Preserving Aggregation):**
 *   **IBLT for Neural Networks (IBLT4NN)**: Utilizes Galois Fields and cryptographic primitives (PRV) to enable the secure aggregation of numerical updates (e.g., gradients, weights), preserving the privacy of individual contributions.
@@ -36,13 +31,7 @@ The main dependencies are `galois` (for finite field arithmetic) and `pycryptodo
 The library can be installed using standard Python packaging tools. We highly recommend using a virtual environment.
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/libFilter.git
 cd libFilter
-
-# (Optional but recommended) Create and activate a virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
 
 # Install the library in editable mode along with its dependencies
 pip install -e .
@@ -131,25 +120,4 @@ print(f"Aggregated weights: {aggregated_weights}")
 
 # Expected output: {20: 0.9, 1500: -0.3, 200: 0.5} (or close floating-point values)
 assert math.isclose(aggregated_weights[20], 0.9)
-```
-
-## Citing `libFilter`
-
-If you use `libFilter` in your research or project, please consider citing it.
-
-```bibtex
-@misc{libFilter,
-    author = {Your Name},
-    title = {{libFilter: An Advanced Probabilistic Data Structure Library in Python}},
-    howpublished = {\url{https://github.com/your-username/libFilter}},
-    year = {2024}
-}
-```
-
-## References
-
-[GKMMS2011] - Michael T. Goodrich, Michael Mitzenmacher, Justin Thaler, _The Power of Choice in Data-Streaming Problems_.
-
-[GMR2011] - Michael T. Goodrich, Michael Mitzenmacher, and Rasmus Pagh, _Invertible Bloom lookup tables_.
-
-(You can continue to list other relevant papers for the algorithms implemented.)
+``
